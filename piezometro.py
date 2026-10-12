@@ -141,9 +141,9 @@ with tab3:
     prom_inm_l = df_inm_editado["Lectura (B units)"].mean()
     prom_inm_t = df_inm_editado["Temperatura (°C)"].mean()
     
-    # Cálculos finales usando L0 de la fase saturada
+    # Cálculos finales usando L0 y T0 de la fase saturada
     delta_baro = s0_baro - s_baro
-    efecto_termico = tk_factor * (prom_sat_t - prom_inm_t)
+    efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
     
     if tipo_modelo == "Polinomial":
         termino_a = coef_a * (prom_inm_l ** 2)
