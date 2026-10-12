@@ -23,7 +23,8 @@ if "sensores_db" not in st.session_state:
 
 # --- BARRA LATERAL: SELECCIÓN Y ADMINISTRACIÓN DE SENSORES ---
 st.sidebar.header("1. Catálogo de Sensores")
-sensor_seleccionado = st.sidebar.selectbox("Seleccione el Piezómetro", list(st.session_state.sensores_db.keys()))
+lista_sensores = list(st.session_state.sensores_db.keys())
+sensor_seleccionado = st.sidebar.selectbox("Seleccione el Piezómetro", lista_sensores)
 
 with st.sidebar.expander("➕ Agregar nuevo sensor al proyecto"):
     nuevo_id = st.text_input("ID del Nuevo Sensor", value="VWP-03")
@@ -42,33 +43,35 @@ with st.sidebar.expander("➕ Agregar nuevo sensor al proyecto"):
                 "modelo": nuevo_modelo, "x": nueva_x, "y": nueva_y, "z": nueva_z,
                 "a": 1.0e-07, "b": -0.1, "cf": 0.09, "tk": 0.05
             }
-            st.success(f"¡Sensor {nuevo_id} agregado con éxito! Seleccionalo arriba.")
+            st.success(f"¡Sensor {nuevo_id} agregado con éxito!")
             st.rerun()
         else:
             st.error("El ID del sensor ya existe.")
 
-# Cargar los datos del sensor activo seleccionado
+# Cargar los datos del sensor activo asegurando compatibilidad de llaves
 datos_sensor = st.session_state.sensores_db[sensor_seleccionado]
 
 st.sidebar.divider()
 st.sidebar.header(f"Parámetros: {sensor_seleccionado}")
-tipo_modelo = st.sidebar.selectbox("Modelo de Cálculo", ["Polinomial", "Lineal"], index=0 if datos_sensor["modelo"]=="Polinomial" else 1, key="act_mod")
+
+idx_modelo = 0 if datos_sensor.get("modelo", "Polinomial") == "Polinomial" else 1
+tipo_modelo = st.sidebar.selectbox("Modelo de Cálculo", ["Polinomial", "Lineal"], index=idx_modelo)
 
 st.sidebar.subheader("Ubicación y Coordenadas")
-coord_x = st.sidebar.number_input("Coordenada X", value=datos_sensor["x"], format="%.2f", key="act_x")
-coord_y = st.sidebar.number_input("Coordenada Y", value=datos_sensor["y"], format="%.2f", key="act_y")
-cota_instalacion = st.sidebar.number_input("Elevación Z / Cota (m.s.n.m.)", value=datos_sensor["z"], format="%.3f", key="act_z")
+coord_x = st.sidebar.number_input("Coordenada X", value=float(datos_sensor.get("x", 0.0)), format="%.2f")
+coord_y = st.sidebar.number_input("Coordenada Y", value=float(datos_sensor.get("y", 0.0)), format="%.2f")
+cota_instalacion = st.sidebar.number_input("Elevación Z / Cota (m.s.n.m.)", value=float(datos_sensor.get("z", 0.0)), format="%.3f")
 
 st.sidebar.subheader("Parámetros de Calibración")
 if tipo_modelo == "Polinomial":
-    coef_a = st.sidebar.number_input("Constante A", value=datos_sensor["a"], format="%.4e", key="act_a")
-    coef_b = st.sidebar.number_input("Constante B", value=datos_sensor["b"], format="%.4f", key="act_b")
+    coef_a = st.sidebar.number_input("Constante A", value=float(datos_sensor.get("a", 1.4917e-07)), format="%.4e")
+    coef_b = st.sidebar.number_input("Constante B", value=float(datos_sensor.get("b", -9.9531e-02)), format="%.4f")
     cf_factor = 0.0
 else:
-    cf_factor = st.sidebar.number_input("Factor Lineal (CF) [kPa/B unit]", value=datos_sensor["cf"] if datos_sensor["cf"]>0 else 9.7384e-02, format="%.4e", key="act_cf")
+    cf_factor = st.sidebar.number_input("Factor Lineal (CF) [kPa/B unit]", value=float(datos_sensor.get("cf", 9.7384e-02)), format="%.4e")
     coef_a, coef_b = 0.0, 0.0
 
-tk_factor = st.sidebar.number_input("Coeficiente Térmico (Tk) [kPa/°C]", value=datos_sensor["tk"], format="%.4e", key="act_tk")
+tk_factor = st.sidebar.number_input("Coeficiente Térmico (Tk) [kPa/°C]", value=float(datos_sensor.get("tk", 1.1566e-02)), format="%.4e")
 
 st.sidebar.subheader("Presión Barométrica (Opcional)")
 s0_baro = st.sidebar.number_input("Presión Inicial S0 (kPa)", value=101.325, format="%.3f")
