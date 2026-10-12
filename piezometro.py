@@ -6,19 +6,17 @@ from datetime import datetime
 st.set_page_config(page_title="Gestión y Verificación de Piezómetros VWP", page_icon="📊", layout="wide")
 
 st.title("🚰 Sistema de Verificación y Calibración de Piezómetros VWP")
-st.markdown("Gestión multi-sensor con coordenadas, elevación ($m.s.n.m.$) y control de modelos Lineal/Polinómico.")
+st.markdown("Gestión multi-sensor con coordenadas (X, Y, Z) y control para piezómetros de cuerda vibrante.")
 
 # --- BASE DE DATOS DE SENSORES EN MEMORIA (STATE) ---
 if "sensores_db" not in st.session_state:
     st.session_state.sensores_db = {
         "VWP-01": {
-            "modelo": "Polinomial", "cota": 616.500, 
-            "lat": 25.7250, "lon": -100.3100,
+            "modelo": "Polinomial", "x": 350120.00, "y": 2840500.00, "z": 616.500, 
             "a": 4.9327e-08, "b": -9.8039e-02, "cf": 0.0, "tk": 1.2270e-01
         },
         "VWP-02": {
-            "modelo": "Polinomial", "cota": 612.100, 
-            "lat": 25.7260, "lon": -100.3115,
+            "modelo": "Polinomial", "x": 350150.00, "y": 2840550.00, "z": 612.100, 
             "a": 1.4917e-07, "b": -9.9531e-02, "cf": 0.0, "tk": 1.1566e-02
         }
     }
@@ -27,22 +25,27 @@ if "sensores_db" not in st.session_state:
 st.sidebar.header("1. Catálogo de Sensores")
 sensor_seleccionado = st.sidebar.selectbox("Seleccione el Piezómetro", list(st.session_state.sensores_db.keys()))
 
-with st.sidebar.expander("➕ Agregar nuevo sensor"):
+with st.sidebar.expander("➕ Agregar nuevo sensor al proyecto"):
     nuevo_id = st.text_input("ID del Nuevo Sensor", value="VWP-03")
     nuevo_modelo = st.selectbox("Modelo", ["Polinomial", "Lineal"], key="n_mod")
-    nueva_cota = st.number_input("Cota de Instalación (m.s.n.m.)", value=615.0, format="%.3f", key="n_cot")
-    nueva_lat = st.number_input("Latitud", value=25.0, format="%.4f", key="n_lat")
-    nueva_lon = st.number_input("Longitud", value=-100.0, format="%.4f", key="n_lon")
+    col_nx, col_ny, col_nz = st.columns(3)
+    with col_nx:
+        nueva_x = st.number_input("Coordenada X", value=350000.0, format="%.2f", key="n_x")
+    with col_ny:
+        nueva_y = st.number_input("Coordenada Y", value=2840000.0, format="%.2f", key="n_y")
+    with col_nz:
+        nueva_z = st.number_input("Elevación Z (m)", value=615.0, format="%.3f", key="n_z")
+        
     if st.button("Guardar Sensor"):
         if nuevo_id not in st.session_state.sensores_db:
             st.session_state.sensores_db[nuevo_id] = {
-                "modelo": nuevo_modelo, "cota": nueva_cota, "lat": nueva_lat, "lon": nueva_lon,
+                "modelo": nuevo_modelo, "x": nueva_x, "y": nueva_y, "z": nueva_z,
                 "a": 1.0e-07, "b": -0.1, "cf": 0.09, "tk": 0.05
             }
-            st.success(f"¡Sensor {nuevo_id} agregado!")
+            st.success(f"¡Sensor {nuevo_id} agregado con éxito! Seleccionalo arriba.")
             st.rerun()
         else:
-            st.error("El ID ya existe.")
+            st.error("El ID del sensor ya existe.")
 
 # Cargar los datos del sensor activo seleccionado
 datos_sensor = st.session_state.sensores_db[sensor_seleccionado]
@@ -50,11 +53,11 @@ datos_sensor = st.session_state.sensores_db[sensor_seleccionado]
 st.sidebar.divider()
 st.sidebar.header(f"Parámetros: {sensor_seleccionado}")
 tipo_modelo = st.sidebar.selectbox("Modelo de Cálculo", ["Polinomial", "Lineal"], index=0 if datos_sensor["modelo"]=="Polinomial" else 1, key="act_mod")
-cota_instalacion = st.sidebar.number_input("Cota de Instalación (m.s.n.m.)", value=datos_sensor["cota"], format="%.3f", key="act_cot")
 
-st.sidebar.subheader("Coordenadas Geográficas")
-latitud = st.sidebar.number_input("Latitud", value=datos_sensor["lat"], format="%.6f", key="act_lat")
-longitud = st.sidebar.number_input("Longitud", value=datos_sensor["lon"], format="%.6f", key="act_lon")
+st.sidebar.subheader("Ubicación y Coordenadas")
+coord_x = st.sidebar.number_input("Coordenada X", value=datos_sensor["x"], format="%.2f", key="act_x")
+coord_y = st.sidebar.number_input("Coordenada Y", value=datos_sensor["y"], format="%.2f", key="act_y")
+cota_instalacion = st.sidebar.number_input("Elevación Z / Cota (m.s.n.m.)", value=datos_sensor["z"], format="%.3f", key="act_z")
 
 st.sidebar.subheader("Parámetros de Calibración")
 if tipo_modelo == "Polinomial":
@@ -165,20 +168,14 @@ with tab2:
     res_c3.metric("Columna de Agua (m)", f"{altura_mca:.3f}")
     res_c4.metric("Elevación del Agua (m.s.n.m.)", f"{elevacion_agua_msnm:.3f}")
 
-    with st.expander("Ver detalles geográficos y técnicos"):
-        st.write(f"- **Latitud:** {latitud:.6f}")
-        st.write(f"- **Longitud:** {longitud:.6f}")
-        st.write(f"- **Cota de Instalación:** {cota_instalacion:.3f} m.s.n.m.")
-        st.write(f"- **Modelo utilizado:** {tipo_modelo}")
-
 # Botón para exportar reporte resumido en CSV del sensor activo
 st.divider()
 if st.button(f"📥 Generar Reporte CSV de {sensor_seleccionado}"):
     data_resumen = {
         "Sensor": [sensor_seleccionado],
-        "Latitud": [latitud],
-        "Longitud": [longitud],
-        "Cota_Instalacion_msnm": [cota_instalacion],
+        "Coord_X": [coord_x],
+        "Coord_Y": [coord_y],
+        "Cota_Z_msnm": [cota_instalacion],
         "Modelo": [tipo_modelo],
         "L0_Seco": [prom_seco_l0],
         "L_Saturado": [prom_sat_l],
