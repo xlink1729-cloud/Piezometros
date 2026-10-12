@@ -60,12 +60,14 @@ with tab1:
     prom_seco_l0 = df_seco_editado["Lectura (B units)"].mean()
     prom_seco_t0 = df_seco_editado["Temperatura (°C)"].mean()
     
-    # Cálculo automático de la constante C si es polinomial: C = -[A(L0^2) + B(L0)]
+    # Cálculo formal de la constante C: C = -[A(L0^2) + B(L0)]
+    c_constante = 0.0
     if tipo_modelo == "Polinomial":
         c_constante = - (coef_a * (prom_seco_l0 ** 2) + coef_b * prom_seco_l0)
-        st.info(f"**Constante C calculada automáticamente:** `{c_constante:.4f}` kPa")
     
     st.success(f"**Promedio Fase en Seco ($L_0$):** **{prom_seco_l0:.3f} B units** | **$T_0$:** **{prom_seco_t0:.2f} °C**")
+    if tipo_modelo == "Polinomial":
+        st.info(f"**Constante C calculada con A y B ($C = -[A(L_0^2) + B(L_0)]$):** `{c_constante:.4f}` kPa")
 
 with tab2:
     st.header("b) Verificación Saturado (Lectura Actual / L)")
@@ -96,17 +98,17 @@ with tab2:
     prom_sat_l = df_sat_editado["Lectura (B units)"].mean()
     prom_sat_t = df_sat_editado["Temperatura (°C)"].mean()
     
-    # Cálculos según la fórmula seleccionada de la hoja de calibración
+    # Cálculos según la fórmula seleccionada
     delta_baro = s0_baro - s_baro
     efecto_termico = tk_factor * (prom_seco_t0 - prom_sat_t)
     
     if tipo_modelo == "Polinomial":
-        # P = A(L^2) + B(L) + C - Tk(T0 - T) + (S0 - S)
+        # P = A(L^2) + B(L) + C - Tk(T0 - T) + (S0 - S)[cite: 5]
         termino_a = coef_a * (prom_sat_l ** 2)
         termino_b = coef_b * prom_sat_l
         presion_kPa = termino_a + termino_b + c_constante - efecto_termico + delta_baro
     else:
-        # P = CF(L0 - L) - Tk(T0 - T) + (S0 - S)
+        # P = CF(L0 - L) - Tk(T0 - T) + (S0 - S)[cite: 5]
         presion_kPa = cf_factor * (prom_seco_l0 - prom_sat_l) - efecto_termico + delta_baro
         
     altura_mca = presion_kPa / 9.81
@@ -126,7 +128,7 @@ with tab2:
         st.write(f"- **Temperatura Inicial ($T_0$):** {prom_seco_t0:.2f} °C[cite: 5]")
         st.write(f"- **Temperatura Actual ($T$):** {prom_sat_t:.2f} °C[cite: 5]")
         if tipo_modelo == "Polinomial":
-            st.write(f"- **Constante C:** {c_constante:.4f} kPa[cite: 5]")
+            st.write(f"- **Constante C calculada ($-\\(A L_0^2 + B L_0\\)$):** {c_constante:.4f} kPa[cite: 5, 6]")
         st.write(f"- **Corrección Térmica ($-Tk(T_0 - T)$):** {-efecto_termico:.3f} kPa[cite: 5]")
         st.write(f"- **Corrección Barométrica ($(S_0 - S)$):** {delta_baro:.3f} kPa[cite: 5]")
 
@@ -140,6 +142,7 @@ if st.button("📥 Generar Resumen para Reporte"):
         "T0_Seco": [prom_seco_t0],
         "L_Saturado": [prom_sat_l],
         "T_Saturado": [prom_sat_t],
+        "Constante_C": [c_constante if tipo_modelo == "Polinomial" else "N/A"],
         "Presion_kPa": [presion_kPa],
         "Presion_mca": [altura_mca]
     }
