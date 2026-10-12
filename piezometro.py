@@ -161,4 +161,35 @@ with tab2:
     
     res_c1, res_c2, res_c3, res_c4 = st.columns(4)
     res_c1.metric("Presión (kPa)", f"{presion_kPa:.2f}")
-    res_c2.metric("Presión (bar)", f"{presion_kPa
+    res_c2.metric("Presión (bar)", f"{presion_kPa / 100:.3f}")
+    res_c3.metric("Columna de Agua (m)", f"{altura_mca:.3f}")
+    res_c4.metric("Elevación del Agua (m.s.n.m.)", f"{elevacion_agua_msnm:.3f}")
+
+    with st.expander("Ver detalles geográficos y técnicos"):
+        st.write(f"- **Latitud:** {latitud:.6f}")
+        st.write(f"- **Longitud:** {longitud:.6f}")
+        st.write(f"- **Cota de Instalación:** {cota_instalacion:.3f} m.s.n.m.")
+        st.write(f"- **Modelo utilizado:** {tipo_modelo}")
+
+# Botón para exportar reporte resumido en CSV del sensor activo
+st.divider()
+if st.button(f"📥 Generar Reporte CSV de {sensor_seleccionado}"):
+    data_resumen = {
+        "Sensor": [sensor_seleccionado],
+        "Latitud": [latitud],
+        "Longitud": [longitud],
+        "Cota_Instalacion_msnm": [cota_instalacion],
+        "Modelo": [tipo_modelo],
+        "L0_Seco": [prom_seco_l0],
+        "L_Saturado": [prom_sat_l],
+        "Presion_kPa": [presion_kPa],
+        "Columna_Agua_m": [altura_mca],
+        "Elevacion_Agua_msnm": [elevacion_agua_msnm]
+    }
+    df_export = pd.DataFrame(data_resumen)
+    st.download_button(
+        label=f"Descargar CSV de {sensor_seleccionado}",
+        data=df_export.to_csv(index=False).encode('utf-8'),
+        file_name=f"verificacion_{sensor_seleccionado}.csv",
+        mime="text/csv",
+    )
