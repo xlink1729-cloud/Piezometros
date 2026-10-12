@@ -6,26 +6,24 @@ from datetime import datetime
 st.set_page_config(page_title="Verificación de Piezómetros VWP", page_icon="📊", layout="wide")
 
 st.title("🚰 Protocolo de Verificación de Piezómetros de Cuerda Vibrante")
-st.markdown("Herramienta de verificación en taller/campo (Modelos Lineal y Polinómico con datos de pozo y NAF).")
+st.markdown("Herramienta de verificación con cálculo de Columna de Agua y Elevación ($m.s.n.m.$).")
 
 # Configuración general y constantes en la barra lateral
-st.sidebar.header("1. Configuración del Sensor")
+st.sidebar.header("1. Configuración del Sensor y Cota")
 sensor_id = st.sidebar.text_input("ID del Piezómetro", value="VWP-01")
 tipo_modelo = st.sidebar.selectbox("Modelo de Cálculo", ["Polinomial", "Lineal"])
 
-st.sidebar.subheader("Datos del Pozo y Ubicación")
-profundidad_pozo = st.sidebar.number_input("Profundidad Total del Pozo (m)", value=30.0, format="%.2f")
-profundidad_instalacion = st.sidebar.number_input("Profundidad de Instalación (m)", value=15.0, format="%.2f")
-naf_referencia = st.sidebar.number_input("Nivel de Agua Freática (NAF) [m]", value=5.0, format="%.2f")
+# Parámetro clave extraído de la hoja de cálculo
+cota_instalacion = st.sidebar.number_input("Cota / Elevación de Instalación (m.s.n.m.)", value=616.500, format="%.3f")
 
 st.sidebar.subheader("Parámetros de Calibración")
 if tipo_modelo == "Polinomial":
-    coef_a = st.sidebar.number_input("Constante A", value=1.4917e-07, format="%.4e")
-    coef_b = st.sidebar.number_input("Constante B", value=-9.9531e-02, format="%.4f")
+    coef_a = st.sidebar.number_input("Constante A", value=4.9327e-08, format="%.4e")
+    coef_b = st.sidebar.number_input("Constante B", value=-9.8039e-02, format="%.4f")
 else:
-    cf_factor = st.sidebar.number_input("Factor Lineal (CF) [kPa/B unit]", value=9.7398e-02, format="%.4e")
+    cf_factor = st.sidebar.number_input("Factor Lineal (CF) [kPa/B unit]", value=9.7384e-02, format="%.4e")
 
-tk_factor = st.sidebar.number_input("Coeficiente Térmico (Tk) [kPa/°C]", value=1.1566e-02, format="%.4e")
+tk_factor = st.sidebar.number_input("Coeficiente Térmico (Tk) [kPa/°C]", value=1.2270e-01, format="%.4e")
 
 st.sidebar.subheader("Presión Barométrica (Opcional)")
 s0_baro = st.sidebar.number_input("Presión Inicial S0 (kPa)", value=101.325, format="%.3f")
@@ -38,14 +36,14 @@ hora_actual = datetime.now().strftime("%H:%M")
 
 with tab1:
     st.header("a) Verificación en Seco (Lectura Inicial / L0)")
-    st.write("Ingrese las 10 lecturas consecutivas al aire, su temperatura y hora (B units = $Hz^2 / 1000$).")
+    st.write("Ingrese las 10 lecturas consecutivas al aire, su temperatura y hora (B units).")
     
     df_seco_default = pd.DataFrame({
         "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
         "Fecha": [fecha_hoy] * 10,
         "Hora": [hora_actual] * 10,
-        "Lectura (B units)": [2890.0 + i*0.2 for i in range(10)],
-        "Temperatura (°C)": [22.0] * 10
+        "Lectura (B units)": [7502.300 + i*0.1 for i in range(10)],
+        "Temperatura (°C)": [28.0] * 10
     })
     
     df_seco_editado = st.data_editor(
@@ -82,7 +80,7 @@ with tab2:
         "Fecha": [fecha_hoy] * 10,
         "Hora": [hora_actual] * 10,
         "Lectura (B units)": [prom_seco_l0 + 150.0 + (i*0.2) for i in range(10)],
-        "Temperatura (°C)": [20.5] * 10
+        "Temperatura (°C)": [28.0] * 10
     })
     
     df_sat_editado = st.data_editor(
@@ -113,43 +111,38 @@ with tab2:
         presion_kPa = cf_factor * (prom_seco_l0 - prom_sat_l) - efecto_termico + delta_baro
         
     altura_mca = presion_kPa / 9.81
+    elevacion_agua_msnm = cota_instalacion + altura_mca
 
     st.divider()
-    st.subheader("Resultados de la Verificación")
+    st.subheader("Resultados de la Verificación y Elevación")
     
-    res_c1, res_c2, res_c3 = st.columns(3)
-    res_c1.metric("Presión Calculada (kPa)", f"{presion_kPa:.2f}")
-    res_c2.metric("Presión Calculada (bar)", f"{presion_kPa / 100:.3f}")
-    res_c3.metric("Columna de Agua (mca)", f"{altura_mca:.2f}")
+    res_c1, res_c2, res_c3, res_c4 = st.columns(4)
+    res_c1.metric("Presión (kPa)", f"{presion_kPa:.2f}")
+    res_c2.metric("Presión (bar)", f"{presion_kPa / 100:.3f}")
+    res_c3.metric("Columna de Agua (m)", f"{altura_mca:.3f}")
+    res_c4.metric("Elevación del Agua (m.s.n.m.)", f"{elevacion_agua_msnm:.3f}")
 
-    with st.expander("Ver desglose técnico de la ecuación y datos del pozo"):
-        st.write(f"- **Profundidad del Pozo:** {profundidad_pozo:.2f} m")
-        st.write(f"- **Profundidad de Instalación:** {profundidad_instalacion:.2f} m")
-        st.write(f"- **NAF de Referencia:** {naf_referencia:.2f} m")
-        st.write(f"- **Modelo utilizado:** {tipo_modelo}")
-        st.write(f"- **Lectura Inicial ($L_0$):** {prom_seco_l0:.3f} B units")
-        st.write(f"- **Lectura Actual ($L$):** {prom_sat_l:.3f} B units")
+    with st.expander("Ver desglose técnico de la ecuación"):
+        st.write(f"- **Cota de Instalación:** {cota_instalacion:.3f} m.s.n.m.")
+        st.write(f"- **Modelo utilizado:** {tipo_modelo}[cite: 5]")
+        st.write(f"- **Lectura Inicial ($L_0$):** {prom_seco_l0:.3f} B units[cite: 5]")
+        st.write(f"- **Lectura Actual ($L$):** {prom_sat_l:.3f} B units[cite: 5]")
         if tipo_modelo == "Polinomial":
-            st.write(f"- **Constante C:** {c_constante:.4f} kPa")
-        st.write(f"- **Corrección Térmica:** {-efecto_termico:.3f} kPa")
-        st.write(f"- **Corrección Barométrica:** {delta_baro:.3f} kPa")
+            st.write(f"- **Constante C:** {c_constante:.4f} kPa[cite: 5]")
+        st.write(f"- **Corrección Térmica:** {-efecto_termico:.3f} kPa[cite: 5]")
 
 # Botón para exportar reporte resumido en CSV
 st.divider()
 if st.button("📥 Generar Resumen para Reporte"):
     data_resumen = {
         "Sensor": [sensor_id],
-        "Profundidad_Pozo_m": [profundidad_pozo],
-        "Profundidad_Instalacion_m": [profundidad_instalacion],
-        "NAF_m": [naf_referencia],
+        "Cota_Instalacion_msnm": [cota_instalacion],
         "Modelo": [tipo_modelo],
         "L0_Seco": [prom_seco_l0],
-        "T0_Seco": [prom_seco_t0],
         "L_Saturado": [prom_sat_l],
-        "T_Saturado": [prom_sat_t],
-        "Constante_C": [c_constante if tipo_modelo == "Polinomial" else "N/A"],
         "Presion_kPa": [presion_kPa],
-        "Presion_mca": [altura_mca]
+        "Columna_Agua_m": [altura_mca],
+        "Elevacion_Agua_msnm": [elevacion_agua_msnm]
     }
     df_export = pd.DataFrame(data_resumen)
     st.download_button(
