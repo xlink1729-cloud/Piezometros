@@ -6,18 +6,19 @@ from datetime import datetime
 st.set_page_config(page_title="Verificación de Piezómetros VWP", page_icon="📊", layout="wide")
 
 st.title("🚰 Protocolo de Verificación de Piezómetros de Cuerda Vibrante")
-st.markdown("Herramienta de verificación en taller/campo (En Seco, Saturado / Inmerso a 0.5m) con control de Pozo y NAF.")
+st.markdown("Herramienta de verificación en taller/campo (Modelos Lineal y Polinómico con datos de pozo y NAF).")
 
-# Configuración general, del pozo y constantes en la barra lateral
-st.sidebar.header("1. Identificación y Pozo")
+# Configuración general y constantes en la barra lateral
+st.sidebar.header("1. Configuración del Sensor")
 sensor_id = st.sidebar.text_input("ID del Piezómetro", value="VWP-01")
-nombre_pozo = st.sidebar.text_input("Nombre / ID del Pozo", value="Pozo-PZ-05")
-ubicacion_sitio = st.sidebar.text_input("Sitio / Proyecto", value="Obra Hidráulica")
-naf_inicial = st.sidebar.number_input("Nivel de Agua Freática (NAF) [m]", value=12.50, format="%.2f")
-
-st.sidebar.header("2. Configuración de Cálculo")
 tipo_modelo = st.sidebar.selectbox("Modelo de Cálculo", ["Polinomial", "Lineal"])
 
+st.sidebar.subheader("Datos del Pozo y Ubicación")
+profundidad_pozo = st.sidebar.number_input("Profundidad Total del Pozo (m)", value=30.0, format="%.2f")
+profundidad_instalacion = st.sidebar.number_input("Profundidad de Instalación (m)", value=15.0, format="%.2f")
+naf_referencia = st.sidebar.number_input("Nivel de Agua Freática (NAF) [m]", value=5.0, format="%.2f")
+
+st.sidebar.subheader("Parámetros de Calibración")
 if tipo_modelo == "Polinomial":
     coef_a = st.sidebar.number_input("Constante A", value=1.4917e-07, format="%.4e")
     coef_b = st.sidebar.number_input("Constante B", value=-9.9531e-02, format="%.4f")
@@ -30,14 +31,13 @@ st.sidebar.subheader("Presión Barométrica (Opcional)")
 s0_baro = st.sidebar.number_input("Presión Inicial S0 (kPa)", value=101.325, format="%.3f")
 s_baro = st.sidebar.number_input("Presión Actual S (kPa)", value=101.325, format="%.3f")
 
-tab1, tab2 = st.tabs(["3. Fase a) En Seco (L0, T0)", "4. Fase b) Inmerso / Saturado y Resultados"])
+tab1, tab2 = st.tabs(["2. Fase a) En Seco (L0, T0)", "3. Fase b) Saturado y Resultados"])
 
 fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 hora_actual = datetime.now().strftime("%H:%M")
 
 with tab1:
     st.header("a) Verificación en Seco (Lectura Inicial / L0)")
-    st.write(f"**Sitio:** {ubicacion_sitio} | **Pozo:** {nombre_pozo} | **NAF de referencia:** {naf_inicial} m")
     st.write("Ingrese las 10 lecturas consecutivas al aire, su temperatura y hora (B units = $Hz^2 / 1000$).")
     
     df_seco_default = pd.DataFrame({
@@ -71,11 +71,11 @@ with tab1:
     
     st.success(f"**Promedio Fase en Seco ($L_0$):** **{prom_seco_l0:.3f} B units** | **$T_0$:** **{prom_seco_t0:.2f} °C**")
     if tipo_modelo == "Polinomial":
-        st.info(f"**Constante C calculada ($C = -[A(L_0^2) + B(L_0)]$):** `{c_constante:.4f}` kPa[cite: 5, 6]")
+        st.info(f"**Constante C calculada ($C = -[A(L_0^2) + B(L_0)]$):** `{c_constante:.4f}` kPa")
 
 with tab2:
-    st.header("b) Verificación Inmerso / Saturado (Prueba a 0.5 m o Tubo)")
-    st.write("Sensor saturado e inmerso en el tubo de prueba (columna de referencia de 0.5 m o contenedor).")
+    st.header("b) Verificación Saturado (Lectura Actual / L)")
+    st.write("Sensor saturado tras 1 hora sin filtro poroso, con el filtro colocado de nuevo en el contenedor de agua.")
     
     df_sat_default = pd.DataFrame({
         "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
@@ -122,29 +122,32 @@ with tab2:
     res_c2.metric("Presión Calculada (bar)", f"{presion_kPa / 100:.3f}")
     res_c3.metric("Columna de Agua (mca)", f"{altura_mca:.2f}")
 
-    with st.expander("Ver resumen técnico y datos del pozo"):
-        st.write(f"- **Sitio / Proyecto:** {ubicacion_sitio}")
-        st.write(f"- **Pozo destino:** {nombre_pozo}")
-        st.write(f"- **NAF registrada:** {naf_inicial} m")
-        st.write(f"- **Modelo utilizado:** {tipo_modelo}[cite: 5]")
-        st.write(f"- **Lectura Inicial ($L_0$):** {prom_seco_l0:.3f} B units[cite: 5]")
-        st.write(f"- **Lectura Actual ($L$):** {prom_sat_l:.3f} B units[cite: 5]")
+    with st.expander("Ver desglose técnico de la ecuación y datos del pozo"):
+        st.write(f"- **Profundidad del Pozo:** {profundidad_pozo:.2f} m")
+        st.write(f"- **Profundidad de Instalación:** {profundidad_instalacion:.2f} m")
+        st.write(f"- **NAF de Referencia:** {naf_referencia:.2f} m")
+        st.write(f"- **Modelo utilizado:** {tipo_modelo}")
+        st.write(f"- **Lectura Inicial ($L_0$):** {prom_seco_l0:.3f} B units")
+        st.write(f"- **Lectura Actual ($L$):** {prom_sat_l:.3f} B units")
         if tipo_modelo == "Polinomial":
-            st.write(f"- **Constante C:** {c_constante:.4f} kPa[cite: 5, 6]")
+            st.write(f"- **Constante C:** {c_constante:.4f} kPa")
+        st.write(f"- **Corrección Térmica:** {-efecto_termico:.3f} kPa")
+        st.write(f"- **Corrección Barométrica:** {delta_baro:.3f} kPa")
 
-# Botón para exportar reporte resumido en CSV con datos de pozo y NAF
+# Botón para exportar reporte resumido en CSV
 st.divider()
 if st.button("📥 Generar Resumen para Reporte"):
     data_resumen = {
-        "Sitio": [ubicacion_sitio],
-        "Pozo": [nombre_pozo],
         "Sensor": [sensor_id],
-        "NAF_m": [naf_inicial],
+        "Profundidad_Pozo_m": [profundidad_pozo],
+        "Profundidad_Instalacion_m": [profundidad_instalacion],
+        "NAF_m": [naf_referencia],
         "Modelo": [tipo_modelo],
         "L0_Seco": [prom_seco_l0],
         "T0_Seco": [prom_seco_t0],
         "L_Saturado": [prom_sat_l],
         "T_Saturado": [prom_sat_t],
+        "Constante_C": [c_constante if tipo_modelo == "Polinomial" else "N/A"],
         "Presion_kPa": [presion_kPa],
         "Presion_mca": [altura_mca]
     }
@@ -152,6 +155,6 @@ if st.button("📥 Generar Resumen para Reporte"):
     st.download_button(
         label="Descargar CSV de Verificación",
         data=df_export.to_csv(index=False).encode('utf-8'),
-        file_name=f"verificacion_{nombre_pozo}_{sensor_id}.csv",
+        file_name=f"verificacion_{sensor_id}.csv",
         mime="text/csv",
     )
