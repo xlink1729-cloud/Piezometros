@@ -11,30 +11,38 @@ st.markdown("Herramienta basada en el procedimiento de verificación: **En Seco*
 # Configuración general en la barra lateral
 st.sidebar.header("1. Datos Generales del Sensor")
 sensor_id = st.sidebar.text_input("ID del Piezómetro", value="PZ-01")
-fecha_prueba = st.sidebar.date_input("Fecha de la Prueba", value=datetime.now())
 g_factor = st.sidebar.number_input("Factor de Calibración (G) [kPa/dígito]", value=0.1500, format="%.4f")
 k_factor = st.sidebar.number_input("Coeficiente Térmico (K) [kPa/°C]", value=0.0500, format="%.4f")
 
 tab1, tab2 = st.tabs(["2. Fase a) En Seco", "3. Fase b) Saturado"])
 
+fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+hora_actual = datetime.now().strftime("%H:%M")
+
 with tab1:
     st.header("a) Verificación en Seco")
-    st.write("Modifique las celdas con las 10 lecturas consecutivas, su temperatura y la hora correspondiente (intervalos de 1 min).")
-    
-    # Hora base actual para sugerir un intervalo de 1 minuto por lectura
-    hora_actual = datetime.now().strftime("%H:%M")
+    st.write("Modifique las celdas con la fecha, hora, las 10 lecturas consecutivas y su temperatura (intervalos de 1 min).")
     
     df_seco_default = pd.DataFrame({
         "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
-        "Hora": [datetime.now().strftime("%H:%M")] * 10, # Se puede ajustar o automatizar
+        "Fecha": [fecha_hoy] * 10,
+        "Hora": [hora_actual] * 10,
         "Lectura (dígitos)": [7500.0 + i*0.5 for i in range(10)],
         "Temperatura (°C)": [22.0] * 10
     })
     
+    # Tabla interactiva con columnas autoajustadas al ancho total de la pantalla
     df_seco_editado = st.data_editor(
         df_seco_default, 
         num_rows="fixed", 
         use_container_width=True,
+        column_config={
+            "Lectura (#)": st.column_config.TextColumn("Lectura (#)", width="small"),
+            "Fecha": st.column_config.TextColumn("Fecha", width="medium"),
+            "Hora": st.column_config.TextColumn("Hora", width="small"),
+            "Lectura (dígitos)": st.column_config.NumberColumn("Lectura (dígitos)", format="%.2f", width="medium"),
+            "Temperatura (°C)": st.column_config.NumberColumn("Temperatura (°C)", format="%.2f", width="medium")
+        },
         key="editor_seco"
     )
     
@@ -46,11 +54,12 @@ with tab1:
 with tab2:
     st.header("b) Verificación Saturado")
     st.write("Sensor saturado tras 1 hora sin filtro poroso, con el filtro colocado de nuevo.")
-    st.write("Modifique la tabla con las 10 lecturas consecutivas, temperatura y hora en el contenedor de agua:")
+    st.write("Modifique la tabla con la fecha, hora, las 10 lecturas consecutivas y temperatura en el contenedor de agua:")
     
     df_sat_default = pd.DataFrame({
         "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
-        "Hora": [datetime.now().strftime("%H:%M")] * 10,
+        "Fecha": [fecha_hoy] * 10,
+        "Hora": [hora_actual] * 10,
         "Lectura (dígitos)": [prom_seco_r + 2.0 + (i*0.1) for i in range(10)],
         "Temperatura (°C)": [20.5] * 10
     })
@@ -59,6 +68,13 @@ with tab2:
         df_sat_default, 
         num_rows="fixed", 
         use_container_width=True,
+        column_config={
+            "Lectura (#)": st.column_config.TextColumn("Lectura (#)", width="small"),
+            "Fecha": st.column_config.TextColumn("Fecha", width="medium"),
+            "Hora": st.column_config.TextColumn("Hora", width="small"),
+            "Lectura (dígitos)": st.column_config.NumberColumn("Lectura (dígitos)", format="%.2f", width="medium"),
+            "Temperatura (°C)": st.column_config.NumberColumn("Temperatura (°C)", format="%.2f", width="medium")
+        },
         key="editor_sat"
     )
     
@@ -81,7 +97,6 @@ with tab2:
     res_c3.metric("Altura Piezométrica (mca)", f"{presion_final / 9.81:.2f}")
 
     with st.expander("Ver resumen técnico y validación"):
-        st.write(f"- **Fecha de prueba:** {fecha_prueba}")
         st.write(f"- **Promedio Lecturas Seco (R0):** {prom_seco_r:.2f} dig")
         st.write(f"- **Promedio Lecturas Saturado (R1):** {prom_sat_r:.2f} dig")
         st.write(f"- **Delta de Dígitos ($\Delta R$):** {delta_r:.2f}")
@@ -93,7 +108,6 @@ st.divider()
 if st.button("📥 Generar Resumen para Reporte"):
     data_resumen = {
         "Sensor": [sensor_id],
-        "Fecha": [str(fecha_prueba)],
         "Prom_Seco_Digitos": [prom_seco_r],
         "Prom_Seco_Temp": [prom_seco_t],
         "Prom_Saturado_Digitos": [prom_sat_r],
@@ -105,6 +119,6 @@ if st.button("📥 Generar Resumen para Reporte"):
     st.download_button(
         label="Descargar CSV de Verificación",
         data=df_export.to_csv(index=False).encode('utf-8'),
-        file_name=f"verificacion_{sensor_id}_{fecha_prueba}.csv",
+        file_name=f"verificacion_{sensor_id}.csv",
         mime="text/csv",
     )
