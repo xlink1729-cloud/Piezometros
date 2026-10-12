@@ -17,47 +17,51 @@ tab1, tab2 = st.tabs(["2. Fase a) En Seco", "3. Fase b) Saturado"])
 
 with tab1:
     st.header("a) Verificación en Seco")
-    st.write("Ingrese las 10 lecturas consecutivas al aire y temperatura ambiente (intervalos de 1 min).")
+    st.write("Modifique directamente las celdas de la tabla con las 10 lecturas consecutivas (intervalos de 1 min).")
     
-    # Crear entradas para 10 lecturas en seco
-    cols_seco = st.columns(5)
-    lecturas_seco_r = []
-    lecturas_seco_t = []
+    # Crear un DataFrame por defecto para las 10 lecturas en seco
+    df_seco_default = pd.DataFrame({
+        "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
+        "Lectura (dígitos)": [7500.0 + i*0.5 for i in range(10)],
+        "Temperatura (°C)": [22.0] * 10
+    })
     
-    for i in range(10):
-        col_idx = i % 5
-        with cols_seco[col_idx]:
-            r = st.number_input(f"Seco R{i+1} (dig)", value=7500.0 + i*0.5, key=f"seco_r_{i}")
-            t = st.number_input(f"Seco T{i+1} (°C)", value=22.0, key=f"seco_t_{i}")
-            lecturas_seco_r.append(r)
-            lecturas_seco_t.append(t)
-            
-    prom_seco_r = np.mean(lecturas_seco_r)
-    prom_seco_t = np.mean(lecturas_seco_t)
+    # Tabla interactiva
+    df_seco_editado = st.data_editor(
+        df_seco_default, 
+        num_rows="fixed", 
+        use_container_width=True,
+        key="editor_seco"
+    )
     
-    st.info(f"**Promedio Fase en Seco:** Lectura ($R_0$) = **{prom_seco_r:.2f} dígitos** | Temperatura ($T_0$) = **{prom_seco_t:.2f} °C**")
+    # Calcular promedios de la tabla editable
+    prom_seco_r = df_seco_editado["Lectura (dígitos)"].mean()
+    prom_seco_t = df_seco_editado["Temperatura (°C)"].mean()
+    
+    st.success(f"**Promedio Fase en Seco:** Lectura ($R_0$) = **{prom_seco_r:.2f} dígitos** | Temperatura ($T_0$) = **{prom_seco_t:.2f} °C**")
 
 with tab2:
     st.header("b) Verificación Saturado")
     st.write("Sensor saturado tras 1 hora sin filtro poroso, con el filtro colocado de nuevo.")
-    st.write("Ingrese las 10 lecturas consecutivas (en el contenedor de agua a temperatura estable):")
+    st.write("Modifique la tabla con las 10 lecturas consecutivas en el contenedor de agua:")
     
-    cols_sat = st.columns(5)
-    lecturas_sat_r = []
-    lecturas_sat_t = []
+    df_sat_default = pd.DataFrame({
+        "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
+        "Lectura (dígitos)": [prom_seco_r + 2.0 + (i*0.1) for i in range(10)],
+        "Temperatura (°C)": [20.5] * 10
+    })
     
-    for i in range(10):
-        col_idx = i % 5
-        with cols_sat[col_idx]:
-            r = st.number_input(f"Sat R{i+1} (dig)", value=prom_seco_r + 2.0, key=f"sat_r_{i}")
-            t = st.number_input(f"Sat T{i+1} (°C)", value=20.5, key=f"sat_t_{i}")
-            lecturas_sat_r.append(r)
-            lecturas_sat_t.append(t)
-            
-    prom_sat_r = np.mean(lecturas_sat_r)
-    prom_sat_t = np.mean(lecturas_sat_t)
+    df_sat_editado = st.data_editor(
+        df_sat_default, 
+        num_rows="fixed", 
+        use_container_width=True,
+        key="editor_sat"
+    )
     
-    # Cálculos aplicando corrección térmica respecto al seco (o base)
+    prom_sat_r = df_sat_editado["Lectura (dígitos)"].mean()
+    prom_sat_t = df_sat_editado["Temperatura (°C)"].mean()
+    
+    # Cálculos aplicando corrección térmica
     delta_r = prom_sat_r - prom_seco_r
     delta_t = prom_sat_t - prom_seco_t
     presion_cruda = delta_r * g_factor
