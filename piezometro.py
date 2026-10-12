@@ -6,7 +6,7 @@ from datetime import datetime
 st.set_page_config(page_title="Guía y Verificación de Piezómetros VWP", page_icon="📊", layout="wide")
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
-st.markdown("Herramienta basada en el procedimiento de campo: En Seco $\rightarrow$ Saturado (Lectura $L_0$ y Constante $C$) $\rightarrow$ Inmerso ($0.5\text{ m}$ de prueba).")
+st.markdown("Herramienta basada en el procedimiento de campo: En Seco ==> Saturado (Lectura $L_0$ y Constante $C$) ==> Inmerso ($0.5\text{ m}$ de prueba).")
 
 # --- BASE DE DATOS DE SENSORES EN MEMORIA (STATE) ---
 if "sensores_db" not in st.session_state:
