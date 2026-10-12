@@ -122,15 +122,15 @@ with tab2:
     res_c3.metric("Columna de Agua (mca)", f"{altura_mca:.2f}")
 
     with st.expander("Ver desglose técnico de la ecuación"):
-        st.write(f"- **Modelo utilizado:** {tipo_modelo}[cite: 5]")
-        st.write(f"- **Lectura Inicial ($L_0$):** {prom_seco_l0:.3f} B units[cite: 5]")
-        st.write(f"- **Lectura Actual ($L$):** {prom_sat_l:.3f} B units[cite: 5]")
-        st.write(f"- **Temperatura Inicial ($T_0$):** {prom_seco_t0:.2f} °C[cite: 5]")
-        st.write(f"- **Temperatura Actual ($T$):** {prom_sat_t:.2f} °C[cite: 5]")
+        st.write(f"- **Modelo utilizado:** {tipo_modelo}")
+        st.write(f"- **Lectura Inicial ($L_0$):** {prom_seco_l0:.3f} B units")
+        st.write(f"- **Lectura Actual ($L$):** {prom_sat_l:.3f} B units")
+        st.write(f"- **Temperatura Inicial ($T_0$):** {prom_seco_t0:.2f} °C")
+        st.write(f"- **Temperatura Actual ($T$):** {prom_sat_t:.2f} °C")
         if tipo_modelo == "Polinomial":
-            st.write(f"- **Constante C calculada ($-\\(A L_0^2 + B L_0\\)$):** {c_constante:.4f} kPa[cite: 5, 6]")
-        st.write(f"- **Corrección Térmica ($-Tk(T_0 - T)$):** {-efecto_termico:.3f} kPa[cite: 5]")
-        st.write(f"- **Corrección Barométrica ($(S_0 - S)$):** {delta_baro:.3f} kPa[cite: 5]")
+            st.write(f"- **Constante C calculada ($-\\(A L_0^2 + B L_0\\)$):** {c_constante:.4f} kPa")
+        st.write(f"- **Corrección Térmica ($-Tk(T_0 - T)$):** {-efecto_termico:.3f} kPa")
+        st.write(f"- **Corrección Barométrica ($(S_0 - S)$):** {delta_baro:.3f} kPa")
 
 # Botón para exportar reporte resumido en CSV
 st.divider()
