@@ -6,7 +6,7 @@ from datetime import datetime
 st.set_page_config(page_title="Guía y Verificación de Piezómetros VWP", page_icon="📊", layout="wide")
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
-st.markdown("Herramienta basada en el procedimiento de campo: En Seco ==> Saturado (Lectura $L_0$ y Constante $C$) ==> Inmerso (0.5 m de prueba).")
+st.markdown("Herramienta basada en el procedimiento de campo: En Seco $\rightarrow$ Saturado (Lectura $L_0$ y Constante $C$) $\rightarrow$ Inmerso ($0.5\text{ m}$ de prueba).")
 
 # --- BASE DE DATOS DE SENSORES EN MEMORIA (STATE) ---
 if "sensores_db" not in st.session_state:
@@ -76,11 +76,12 @@ st.sidebar.subheader("Presión Barométrica (Opcional)")
 s0_baro = st.sidebar.number_input("Presión Inicial S0 (kPa)", value=101.325, format="%.3f")
 s_baro = st.sidebar.number_input("Presión Actual S (kPa)", value=101.325, format="%.3f")
 
-# --- PESTAÑAS DEL PROTOCOLO DE 3 FASES ---
-tab1, tab2, tab3 = st.tabs([
+# --- PESTAÑAS DEL PROTOCOLO DE 3 FASES + RESUMEN ---
+tab1, tab2, tab3, tab4 = st.tabs([
     "1. Fase En Seco", 
-    "2. Fase Saturado (Lectura L0 Oficial)", 
-    "3. Fase Inmerso (Prueba 0.5m)"
+    "2. Fase Saturado (Lectura L0)", 
+    "3. Fase Inmerso (Prueba 0.5m)",
+    "4. Resumen Ejecutivo"
 ])
 
 fecha_hoy = datetime.now().strftime("%Y-%m-%d")
@@ -130,7 +131,7 @@ with tab2:
 
 with tab3:
     st.header(f"c) Registro Inmerso (Prueba de 0.5 m) — Pozo: {pozo_instalacion}")
-    st.info("💡 **Guía:** Sensor colocado en el tubo de PVC con **0.5 metros de columna de agua** para verificar la precisión del instrumento.")
+    st.info("💡 **Guía:** Sensor colocado en el recipiente con **0.5 metros de columna de agua** para verificar la precisión del instrumento.")
     
     df_inm_default = pd.DataFrame({
         "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
@@ -144,52 +145,83 @@ with tab3:
     
     prom_inm_l = df_inm_editado["Lectura (B units)"].mean()
     prom_inm_t = df_inm_editado["Temperatura (°C)"].mean()
+
+# Cálculos finales globales para usar en el resumen
+delta_baro = s0_baro - s_baro
+efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
+
+if tipo_modelo == "Polinomial":
+    termino_a = coef_a * (prom_inm_l ** 2)
+    termino_b = coef_b * prom_inm_l
+    presion_kPa = termino_a + termino_b + c_constante - efecto_termico + delta_baro
+else:
+    presion_kPa = cf_factor * (prom_sat_l0 - prom_inm_l) - efecto_termico + delta_baro
     
-    # Cálculos finales usando L0 y T0 de la fase saturada
-    delta_baro = s0_baro - s_baro
-    efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
+altura_mca = presion_kPa / 9.81
+elevacion_agua_msnm = cota_instalacion + altura_mca
+
+with tab4:
+    st.header(f"📋 Resumen Ejecutivo y QA/QC — {sensor_seleccionado}")
+    st.markdown(f"**Ubicación / Pozo:** `{pozo_instalacion}`")
     
-    if tipo_modelo == "Polinomial":
-        termino_a = coef_a * (prom_inm_l ** 2)
-        termino_b = coef_b * prom_inm_l
-        presion_kPa = termino_a + termino_b + c_constante - efecto_termico + delta_baro
-    else:
-        presion_kPa = cf_factor * (prom_sat_l0 - prom_inm_l) - efecto_termico + delta_baro
+    col_sum1, col_sum2, col_sum3 = st.columns(3)
+    
+    with col_sum1:
+        st.subheader("📍 Geometría y Sitio")
+        st.write(f"**Coordenada X:** {coord_x:.2f}")
+        st.write(f"**Coordenada Y:** {coord_y:.2f}")
+        st.write(f"**Cota / Elevación Z:** {cota_instalacion:.3f} m.s.n.m.")
+        st.write(f"**Modelo de Cálculo:** {tipo_modelo}")
         
-    altura_mca = presion_kPa / 9.81
-    elevacion_agua_msnm = cota_instalacion + altura_mca
+    with col_sum2:
+        st.subheader("⚙️ Parámetros Metrológicos")
+        st.write(f"**Lectura Cero ($L_0$):** {prom_sat_l0:.3f} B")
+        st.write(f"**Temperatura Cero ($T_0$):** {prom_sat_t0:.2f} °C")
+        if tipo_modelo == "Polinomial":
+            st.write(f"**Constante A:** {coef_a:.4e}")
+            st.write(f"**Constante B:** {coef_b:.4e}")
+            st.write(f"**Constante C:** {c_constante:.3f} kPa")
+        else:
+            st.write(f"**Factor Lineal (CF):** {cf_factor:.4e}")
+        st.write(f"**Coeficiente Térmico ($Tk$):** {tk_factor:.4e}")
+
+    with col_sum3:
+        st.subheader("📊 Resultados de Prueba (0.5m)")
+        st.write(f"**Lectura Inmerso ($L$):** {prom_inm_l:.3f} B")
+        st.write(f"**Temp. Inmerso ($T$):** {prom_inm_t:.2f} °C")
+        st.write(f"**Presión Calculada:** {presion_kPa:.2f} kPa")
+        st.write(f"**Columna de Agua:** {altura_mca:.3f} mca")
+        st.write(f"**Elevación del Agua:** {elevacion_agua_msnm:.3f} m.s.n.m.")
 
     st.divider()
-    st.subheader(f"Resultados de la Verificación — Pozo {pozo_instalacion}")
     
-    res_c1, res_c2, res_c3, res_c4 = st.columns(4)
-    res_c1.metric("Presión Calculada", f"{presion_kPa:.2f} kPa")
-    res_c2.metric("Presión en Bar", f"{presion_kPa / 100:.3f} bar")
-    res_c3.metric("Columna de Agua Medida", f"{altura_mca:.3f} mca", delta=f"{altura_mca - 0.5:.3f} m vs 0.5m patrón")
-    res_c4.metric("Elevación del Agua", f"{elevacion_agua_msnm:.3f} m.s.n.m.")
-
-# Botón para exportar reporte
-st.divider()
-if st.button(f"📥 Generar Reporte de Verificación — {sensor_seleccionado} ({pozo_instalacion})"):
-    data_resumen = {
-        "Sensor_ID": [sensor_seleccionado],
-        "Pozo_Ubicacion": [pozo_instalacion],
-        "Coord_X": [coord_x],
-        "Coord_Y": [coord_y],
-        "Cota_Z_msnm": [cota_instalacion],
-        "Modelo": [tipo_modelo],
-        "L0_Saturado": [prom_sat_l0],
-        "T0_Saturado": [prom_sat_t0],
-        "Constante_C": [c_constante if tipo_modelo == "Polinomial" else "N/A"],
-        "L_Inmerso": [prom_inm_l],
-        "Presion_kPa": [presion_kPa],
-        "Columna_Agua_m": [altura_mca],
-        "Elevacion_Agua_msnm": [elevacion_agua_msnm]
-    }
-    df_export = pd.DataFrame(data_resumen)
-    st.download_button(
-        label="Descargar CSV de Resultados",
-        data=df_export.to_csv(index=False).encode('utf-8'),
-        file_name=f"verificacion_{sensor_seleccionado}_{pozo_instalacion}.csv",
-        mime="text/csv",
-    )
+    # Botón para exportar reporte completo desde el resumen
+    col_exp1, col_exp2 = st.columns([1, 2])
+    with col_exp1:
+        data_resumen = {
+            "Sensor_ID": [sensor_seleccionado],
+            "Pozo_Ubicacion": [pozo_instalacion],
+            "Coord_X": [coord_x],
+            "Coord_Y": [coord_y],
+            "Cota_Z_msnm": [cota_instalacion],
+            "Modelo": [tipo_modelo],
+            "L0_Saturado": [prom_sat_l0],
+            "T0_Saturado": [prom_sat_t0],
+            "Constante_A": [coef_a if tipo_modelo == "Polinomial" else "N/A"],
+            "Constante_B": [coef_b if tipo_modelo == "Polinomial" else "N/A"],
+            "Constante_C": [c_constante if tipo_modelo == "Polinomial" else "N/A"],
+            "Factor_CF": [cf_factor if tipo_modelo == "Lineal" else "N/A"],
+            "Tk_Termico": [tk_factor],
+            "L_Inmerso": [prom_inm_l],
+            "Presion_kPa": [presion_kPa],
+            "Columna_Agua_m": [altura_mca],
+            "Elevacion_Agua_msnm": [elevacion_agua_msnm]
+        }
+        df_export = pd.DataFrame(data_resumen)
+        st.download_button(
+            label="📥 Descargar Reporte Completo (CSV)",
+            data=df_export.to_csv(index=False).encode('utf-8'),
+            file_name=f"resumen_verificacion_{sensor_seleccionado}_{pozo_instalacion}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
