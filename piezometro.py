@@ -13,6 +13,7 @@ if "sensores_db" not in st.session_state:
     st.session_state.sensores_db = {
         "VW17419": {
             "pozo": "B1-3B", "modelo": "Polinomial", "x": 350120.00, "y": 2840500.00, "z": 616.500, 
+            "prof_pozo": 35.0, "prof_inst": 30.0, "naf": 5.50,
             "a": -3.9602e-07, "b": -1.9458e-01, "cf": 0.0, "tk": 1.1566e-02
         }
     }
@@ -34,10 +35,19 @@ with st.sidebar.expander("➕ Agregar nuevo sensor"):
     with col_nz:
         nueva_z = st.number_input("Elevación Z", value=615.0, format="%.3f", key="n_z")
         
+    col_np1, col_np2, col_np3 = st.columns(3)
+    with col_np1:
+        n_prof_pozo = st.number_input("Prof. Pozo (m)", value=30.0, format="%.2f", key="n_pp")
+    with col_np2:
+        n_prof_inst = st.number_input("Prof. Inst. (m)", value=25.0, format="%.2f", key="n_pi")
+    with col_np3:
+        n_naf = st.number_input("NAF (m)", value=4.0, format="%.2f", key="n_naf")
+        
     if st.button("Guardar Sensor"):
         if nuevo_id not in st.session_state.sensores_db:
             st.session_state.sensores_db[nuevo_id] = {
                 "pozo": nuevo_pozo, "modelo": nuevo_modelo, "x": nueva_x, "y": nueva_y, "z": nueva_z,
+                "prof_pozo": n_prof_pozo, "prof_inst": n_prof_inst, "naf": n_naf,
                 "a": -3.9602e-07, "b": -1.9458e-01, "cf": 0.0, "tk": 0.01
             }
             st.success(f"¡Sensor {nuevo_id} guardado!")
@@ -60,6 +70,11 @@ st.sidebar.subheader("Ubicación y Coordenadas")
 coord_x = st.sidebar.number_input("Coordenada X", value=float(datos_sensor.get("x", 0.0)), format="%.2f")
 coord_y = st.sidebar.number_input("Coordenada Y", value=float(datos_sensor.get("y", 0.0)), format="%.2f")
 cota_instalacion = st.sidebar.number_input("Elevación Z / Cota (m.s.n.m.)", value=float(datos_sensor.get("z", 0.0)), format="%.3f")
+
+st.sidebar.subheader("Geometría del Pozo y Niveles")
+prof_pozo_val = st.sidebar.number_input("Profundidad del Pozo (m)", value=float(datos_sensor.get("prof_pozo", 35.0)), format="%.2f")
+prof_inst_val = st.sidebar.number_input("Profundidad de Instalación (m)", value=float(datos_sensor.get("prof_inst", 30.0)), format="%.2f")
+naf_val = st.sidebar.number_input("Nivel de Agua Freática - NAF (m)", value=float(datos_sensor.get("naf", 5.50)), format="%.2f")
 
 st.sidebar.subheader("Constantes del Fabricante")
 if tipo_modelo == "Polinomial":
@@ -171,6 +186,9 @@ with tab4:
         st.write(f"**Coordenada X:** {coord_x:.2f}")
         st.write(f"**Coordenada Y:** {coord_y:.2f}")
         st.write(f"**Cota / Elevación Z:** {cota_instalacion:.3f} m.s.n.m.")
+        st.write(f"**Profundidad del Pozo:** {prof_pozo_val:.2f} m")
+        st.write(f"**Profundidad de Inst.:** {prof_inst_val:.2f} m")
+        st.write(f"**NAF (Nivel Agua):** {naf_val:.2f} m")
         st.write(f"**Modelo de Cálculo:** {tipo_modelo}")
         
     with col_sum2:
@@ -204,6 +222,9 @@ with tab4:
             "Coord_X": [coord_x],
             "Coord_Y": [coord_y],
             "Cota_Z_msnm": [cota_instalacion],
+            "Profundidad_Pozo_m": [prof_pozo_val],
+            "Profundidad_Inst_m": [prof_inst_val],
+            "NAF_m": [naf_val],
             "Modelo": [tipo_modelo],
             "L0_Saturado": [prom_sat_l0],
             "T0_Saturado": [prom_sat_t0],
