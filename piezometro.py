@@ -6,13 +6,13 @@ from datetime import datetime
 st.set_page_config(page_title="Guía y Verificación de Piezómetros VWP", page_icon="📊", layout="wide")
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
-st.markdown("Herramienta basada en el procedimiento de campo: En Seco ==> Saturado (Lectura $L_0$ y Constante $C$) ==> Inmerso (a $0.5 m$ de prueba).")
+st.markdown("Herramienta basada en el procedimiento de campo: En Seco $\rightarrow$ Saturado (Lectura $L_0$ y Constante $C$) $\rightarrow$ Inmerso ($0.5\text{ m}$ de prueba).")
 
 # --- BASE DE DATOS DE SENSORES EN MEMORIA (STATE) ---
 if "sensores_db" not in st.session_state:
     st.session_state.sensores_db = {
         "VW17419": {
-            "modelo": "Polinomial", "x": 350120.00, "y": 2840500.00, "z": 616.500, 
+            "pozo": "B1-3B", "modelo": "Polinomial", "x": 350120.00, "y": 2840500.00, "z": 616.500, 
             "a": -3.9602e-07, "b": -1.9458e-01, "cf": 0.0, "tk": 1.1566e-02
         }
     }
@@ -20,10 +20,11 @@ if "sensores_db" not in st.session_state:
 # --- BARRA LATERAL: CATÁLOGO Y PARÁMETROS ---
 st.sidebar.header("1. Catálogo de Sensores")
 lista_sensores = list(st.session_state.sensores_db.keys())
-sensor_seleccionado = st.sidebar.selectbox("Seleccione el Piezómetro", lista_sensores)
+sensor_seleccionado = st.sidebar.selectbox("Seleccione el Piezómetro (ID)", lista_sensores)
 
 with st.sidebar.expander("➕ Agregar nuevo sensor"):
-    nuevo_id = st.text_input("ID del Sensor", value="VW-02")
+    nuevo_id = st.text_input("ID del Sensor (Serial)", value="VW-02")
+    nuevo_pozo = st.text_input("Pozo / Ubicación de Instalación", value="B2-4A")
     nuevo_modelo = st.selectbox("Modelo", ["Polinomial", "Lineal"], key="n_mod")
     col_nx, col_ny, col_nz = st.columns(3)
     with col_nx:
@@ -36,7 +37,7 @@ with st.sidebar.expander("➕ Agregar nuevo sensor"):
     if st.button("Guardar Sensor"):
         if nuevo_id not in st.session_state.sensores_db:
             st.session_state.sensores_db[nuevo_id] = {
-                "modelo": nuevo_modelo, "x": nueva_x, "y": nueva_y, "z": nueva_z,
+                "pozo": nuevo_pozo, "modelo": nuevo_modelo, "x": nueva_x, "y": nueva_y, "z": nueva_z,
                 "a": -3.9602e-07, "b": -1.9458e-01, "cf": 0.0, "tk": 0.01
             }
             st.success(f"¡Sensor {nuevo_id} guardado!")
@@ -48,6 +49,9 @@ datos_sensor = st.session_state.sensores_db[sensor_seleccionado]
 
 st.sidebar.divider()
 st.sidebar.header(f"Parámetros: {sensor_seleccionado}")
+
+# Campo editable para el pozo del sensor seleccionado
+pozo_instalacion = st.sidebar.text_input("Pozo / Ubicación Asignada", value=str(datos_sensor.get("pozo", "B1-3B")))
 
 idx_modelo = 0 if datos_sensor.get("modelo", "Polinomial") == "Polinomial" else 1
 tipo_modelo = st.sidebar.selectbox("Modelo de Cálculo", ["Polinomial", "Lineal"], index=idx_modelo)
@@ -83,7 +87,7 @@ fecha_hoy = datetime.now().strftime("%Y-%m-%d")
 hora_actual = datetime.now().strftime("%H:%M")
 
 with tab1:
-    st.header(f"a) Registro Inicial En Seco — {sensor_seleccionado}")
+    st.header(f"a) Registro Inicial En Seco — Sensor: {sensor_seleccionado} | Pozo: {pozo_instalacion}")
     st.info("💡 **Guía:** Lecturas al aire libre previas a la saturación del sensor.")
     
     df_seco_default = pd.DataFrame({
@@ -100,15 +104,15 @@ with tab1:
     st.success(f"Promedio En Seco — Lectura: **{prom_seco_l:.3f} B units** | Temp: **{prom_seco_t:.2f} °C**")
 
 with tab2:
-    st.header(f"b) Registro Saturado (Lectura Cero $L_0$ Oficial) — {sensor_seleccionado}")
+    st.header(f"b) Registro Saturado (Lectura Cero $L_0$ Oficial) — Pozo: {pozo_instalacion}")
     st.info("💡 **Guía:** Se toman tras saturar el sensor. De aquí se obtiene el **$L_0$ oficial** y se calcula la **Constante C** ($C = -[A(L_0^2) + B(L_0)]$).")
     
     df_sat_default = pd.DataFrame({
         "Lectura (#)": [f"Lectura {i}" for i in range(1, 11)],
-        "Fecha": [fecha_hoy] * 10,
-        "Hora": [hora_actual] * 10,
-        "Lectura (B units)": [9757.488 + i*0.1 for i in range(10)],
-        "Temperatura (°C)": [25.75] * 10
+        "Fecha": ["31/03/2025"] * 10,
+        "Hora": ["16:23", "16:24", "16:25", "16:26", "16:27", "16:28", "16:29", "16:30", "16:31", "16:32"],
+        "Lectura (B units)": [9757.488, 9757.667, 9758.308, 9758.378, 9758.414, 9758.466, 9758.210, 9758.213, 9758.494, 9758.415],
+        "Temperatura (°C)": [26.07, 25.85, 25.75, 25.70, 25.68, 25.67, 25.68, 25.68, 25.69, 25.69]
     })
     
     df_sat_editado = st.data_editor(df_sat_default, num_rows="fixed", use_container_width=True, key=f"sat_{sensor_seleccionado}")
@@ -125,7 +129,7 @@ with tab2:
         st.warning(f"🔧 **Constante C Calculada:** `{c_constante:.3f}` kPa")
 
 with tab3:
-    st.header(f"c) Registro Inmerso (Prueba de 0.5 m) — {sensor_seleccionado}")
+    st.header(f"c) Registro Inmerso (Prueba de 0.5 m) — Pozo: {pozo_instalacion}")
     st.info("💡 **Guía:** Sensor colocado en el tubo de PVC con **0.5 metros de columna de agua** para verificar la precisión del instrumento.")
     
     df_inm_default = pd.DataFrame({
@@ -156,7 +160,7 @@ with tab3:
     elevacion_agua_msnm = cota_instalacion + altura_mca
 
     st.divider()
-    st.subheader("Resultados de la Verificación (Prueba de 0.5 m)")
+    st.subheader(f"Resultados de la Verificación — Pozo {pozo_instalacion}")
     
     res_c1, res_c2, res_c3, res_c4 = st.columns(4)
     res_c1.metric("Presión Calculada", f"{presion_kPa:.2f} kPa")
@@ -166,9 +170,10 @@ with tab3:
 
 # Botón para exportar reporte
 st.divider()
-if st.button(f"📥 Generar Reporte de Verificación — {sensor_seleccionado}"):
+if st.button(f"📥 Generar Reporte de Verificación — {sensor_seleccionado} ({pozo_instalacion})"):
     data_resumen = {
-        "Sensor": [sensor_seleccionado],
+        "Sensor_ID": [sensor_seleccionado],
+        "Pozo_Ubicacion": [pozo_instalacion],
         "Coord_X": [coord_x],
         "Coord_Y": [coord_y],
         "Cota_Z_msnm": [cota_instalacion],
@@ -185,6 +190,6 @@ if st.button(f"📥 Generar Reporte de Verificación — {sensor_seleccionado}")
     st.download_button(
         label="Descargar CSV de Resultados",
         data=df_export.to_csv(index=False).encode('utf-8'),
-        file_name=f"verificacion_{sensor_seleccionado}.csv",
+        file_name=f"verificacion_{sensor_seleccionado}_{pozo_instalacion}.csv",
         mime="text/csv",
     )
