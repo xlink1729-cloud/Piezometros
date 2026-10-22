@@ -76,6 +76,32 @@ d = st.session_state.datos_actuales
 # --- BARRA LATERAL: CARGAR / GUARDAR SIEMPRE VISIBLES ---
 st.sidebar.header("📂 1. Gestión de Ficha (.txt)")
 
+# Botón rápido para limpiar y registrar un sensor nuevo
+if st.sidebar.button(
+    "✨ Registrar Nuevo Sensor / Pozo Limpio", use_container_width=True
+):
+  st.session_state.datos_actuales = {
+      "id_sensor": "VW-NUEVO",
+      "pozo": "Nuevo-Pozo",
+      "modelo": "Polinomial",
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "prof_pozo": 30.0,
+      "prof_inst": 25.0,
+      "naf": 4.0,
+      "a": -3.9602e-07,
+      "b": -1.9458e-01,
+      "cf": 0.0,
+      "tk": 1.1566e-02,
+      "s0_baro": 101.325,
+      "s_baro": 101.325,
+      "tabla_seco": None,
+      "tabla_sat": None,
+      "tabla_inm": None,
+  }
+  st.rerun()
+    
 # Cargar Ficha Existente
 archivo_subido = st.sidebar.file_uploader(
     "Cargar Ficha de Pozo (.txt)", type=["txt"]
