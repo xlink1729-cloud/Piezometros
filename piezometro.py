@@ -33,10 +33,21 @@ fecha_hoy_default = datetime.now().strftime("%Y-%m-%d")
 hora_actual_default = datetime.now().strftime("%H:%M")
 
 
-def crear_df_base(lecturas_list=None, fechas_list=None, horas_list=None, temps_list=None, val_l_base=9750.0, val_t_base=25.0):
+def crear_df_base(
+    lecturas_list=None,
+    fechas_list=None,
+    horas_list=None,
+    temps_list=None,
+    val_l_base=9750.0,
+    val_t_base=25.0,
+):
   fechas = fechas_list if fechas_list else [fecha_hoy_default] * 10
   horas = horas_list if horas_list else [hora_actual_default] * 10
-  lecturas = lecturas_list if lecturas_list else [val_l_base + i * 0.1 for i in range(10)]
+  lecturas = (
+      lecturas_list
+      if lecturas_list
+      else [val_l_base + i * 0.1 for i in range(10)]
+  )
   temps = temps_list if temps_list else [val_t_base] * 10
 
   return pd.DataFrame({
@@ -66,6 +77,7 @@ if "datos_actuales" not in st.session_state:
       "tk": 1.1566e-02,
       "s0_baro": 101.325,
       "s_baro": 101.325,
+      "notas": "",  # Campo para observaciones de campo
       "tabla_seco": None,
       "tabla_sat": None,
       "tabla_inm": None,
@@ -96,12 +108,13 @@ if st.sidebar.button(
       "tk": 1.1566e-02,
       "s0_baro": 101.325,
       "s_baro": 101.325,
+      "notas": "",
       "tabla_seco": None,
       "tabla_sat": None,
       "tabla_inm": None,
   }
   st.rerun()
-    
+
 # Cargar Ficha Existente
 archivo_subido = st.sidebar.file_uploader(
     "Cargar Ficha de Pozo (.txt)", type=["txt"]
@@ -180,13 +193,22 @@ s_baro = st.sidebar.number_input(
     "S Actual (kPa)", value=float(d.get("s_baro", 101.325)), format="%.3f"
 )
 
+# RECUADRO DE NOTAS / OBSERVACIONES EN LA BARRA LATERAL
+st.sidebar.subheader("📝 Observaciones / Notas de Campo")
+notas_campo = st.sidebar.text_area(
+    "Registro de novedades en pozo:",
+    value=d.get("notas", ""),
+    placeholder="Ej: Pozo B1-3A asolvado a los 22m, freatímetro indica obstrucción...",
+    height=100,
+)
+
 
 # --- PESTAÑAS DE REGISTRO ---
 tab1, tab2, tab3, tab4 = st.tabs([
     "1. Fase En Seco",
     "2. Fase Saturado (L0)",
     "3. Fase Inmerso (0.5m)",
-    "4. Resumen Ejecutivo",
+    "4. Resumen Ejecutivo y Observaciones",
 ])
 
 # --- TAB 1: SECO ---
@@ -294,6 +316,7 @@ datos_guardar = {
     "tk": tk_factor,
     "s0_baro": s0_baro,
     "s_baro": s_baro,
+    "notas": notas_campo,  # Guarda la nota en la ficha .txt
     "tabla_seco": df_seco_editado.to_dict(orient="records"),
     "tabla_sat": df_sat_editado.to_dict(orient="records"),
     "tabla_inm": df_inm_editado.to_dict(orient="records"),
@@ -323,7 +346,7 @@ st.sidebar.download_button(
     use_container_width=True,
 )
 
-# --- TAB 4: RESUMEN ---
+# --- TAB 4: RESUMEN Y NOTAS ---
 with tab4:
   st.header(
       f"📋 Resumen Ejecutivo — Pozo: {pozo_instalacion} | Sensor: {sensor_id}"
@@ -355,6 +378,17 @@ with tab4:
     st.write(f"**Elevación Agua:** {elevacion_agua_msnm:.3f} m.s.n.m.")
 
   st.divider()
+
+  # VISUALIZACIÓN DE NOTAS EN EL RESUMEN
+  st.subheader("📌 Observaciones / Novedades de Campo Registradas")
+  if notas_campo.strip():
+    st.info(f"✍️ **Nota:** {notas_campo}")
+  else:
+    st.caption("No se han registrado observaciones adicionales para este pozo.")
+
+  st.divider()
+
+  # EXPORTACIÓN EXCEL / CSV (incluye la columna de notas)
   df_export = pd.DataFrame([datos_guardar])
   st.download_button(
       label="📥 Descargar Reporte en Excel / CSV",
