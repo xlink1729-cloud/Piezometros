@@ -227,13 +227,18 @@ with tab1:
       key=f"ed_sec_{pozo_instalacion}",
   )
 
+  # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA EN SECO ---
+  st.session_state.datos_actuales["tabla_seco"] = df_seco_editado.to_dict(
+      orient="records"
+  )
+
   prom_seco_l = df_seco_editado["Lectura (B units)"].mean()
   prom_seco_t = df_seco_editado["Temperatura (°C)"].mean()
   st.success(
       f"Promedio En Seco — Lectura: **{prom_seco_l:.3f} B** | Temp:"
       f" **{prom_seco_t:.2f} °C**"
   )
-
+    
 # --- TAB 2: SATURADO ---
 with tab2:
   st.header(f"b) Registro Saturado (Lectura Cero L0) — Pozo: {pozo_instalacion}")
@@ -250,6 +255,11 @@ with tab2:
       key=f"ed_sat_{pozo_instalacion}",
   )
 
+  # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA ---
+  st.session_state.datos_actuales["tabla_sat"] = df_sat_editado.to_dict(
+      orient="records"
+  )
+
   prom_sat_l0 = df_sat_editado["Lectura (B units)"].mean()
   prom_sat_t0 = df_sat_editado["Temperatura (°C)"].mean()
 
@@ -263,7 +273,7 @@ with tab2:
   )
   if tipo_modelo == "Polinomial":
     st.warning(f"🔧 **Constante C:** `{c_constante:.3f}` kPa")
-
+      
 # --- TAB 3: INMERSO ---
 with tab3:
   st.header(f"c) Registro Inmerso (0.5 m) — Pozo: {pozo_instalacion}")
@@ -278,6 +288,11 @@ with tab3:
       num_rows="fixed",
       use_container_width=True,
       key=f"ed_inm_{pozo_instalacion}",
+  )
+
+  # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA EN INMERSO ---
+  st.session_state.datos_actuales["tabla_inm"] = df_inm_editado.to_dict(
+      orient="records"
   )
 
   prom_inm_l = df_inm_editado["Lectura (B units)"].mean()
