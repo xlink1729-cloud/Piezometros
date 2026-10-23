@@ -298,6 +298,40 @@ with tab3:
   prom_inm_l = df_inm_editado["Lectura (B units)"].mean()
   prom_inm_t = df_inm_editado["Temperatura (°C)"].mean()
 
+  # --- VALIDACIÓN AUTOMÁTICA DE LA PRUEBA DE 0.5M ---
+  st.divider()
+  st.subheader("🎯 Validación de la Prueba (Columna Esperada: 0.50 m)")
+
+  # Nota: 'altura_mca' se calcula con las variables globales de abajo, 
+  # por lo que podemos calcular una vista previa aquí mismo para mostrarlo en la pestaña:
+  _delta_baro = s0_baro - s_baro
+  _efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
+  if tipo_modelo == "Polinomial":
+    _presion_kPa = (coef_a * (prom_inm_l**2)) + (coef_b * prom_inm_l) + c_constante - _efecto_termico + _delta_baro
+  else:
+    _presion_kPa = cf_factor * (prom_sat_l0 - prom_inm_l) - _efecto_termico + _delta_baro
+  
+  _altura_mca_preview = _presion_kPa / 9.81
+  diferencia_m = abs(_altura_mca_preview - 0.50)
+
+  col_v1, col_v2 = st.columns(2)
+  with col_v1:
+    st.metric(
+        label="Columna Calculada vs Real",
+        value=f"{_altura_mca_preview:.3f} mca",
+        delta=f"{_altura_mca_preview - 0.50:+.3f} m",
+    )
+
+  with col_v2:
+    if diferencia_m <= 0.05:
+      st.success(
+          "✅ **PRUEBA APROBADA**: El sensor responde correctamente a la columna de 0.5m (±5 cm)."
+      )
+    else:
+      st.error(
+          "⚠️ **REVISAR**: La lectura difiere más de 5 cm de la columna real. Verifique constantes o posibles burbujas."
+      )
+        
 # CÁLCULOS GLOBALES
 delta_baro = s0_baro - s_baro
 efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
