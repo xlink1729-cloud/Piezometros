@@ -276,7 +276,17 @@ with tab2:
       
 # --- TAB 3: INMERSO ---
 with tab3:
-  st.header(f"c) Registro Inmerso (0.5 m) — Pozo: {pozo_instalacion}")
+  st.header(f"c) Registro Inmerso — Pozo: {pozo_instalacion}")
+
+  # Selector deslizante de la columna de agua de referencia (de 0 a 1 m)
+  altura_referencia = st.slider(
+      "Seleccione la altura de la columna de agua de prueba (m):",
+      min_value=0.0,
+      max_value=1.0,
+      value=0.50,
+      step=0.05,
+      format="%.2f m",
+  )
 
   df_inm_init = (
       pd.DataFrame(d["tabla_inm"])
@@ -298,38 +308,52 @@ with tab3:
   prom_inm_l = df_inm_editado["Lectura (B units)"].mean()
   prom_inm_t = df_inm_editado["Temperatura (°C)"].mean()
 
-  # --- VALIDACIÓN AUTOMÁTICA DE LA PRUEBA DE 0.5M ---
+  # --- VALIDACIÓN AUTOMÁTICA DINÁMICA ---
   st.divider()
-  st.subheader("🎯 Validación de la Prueba (Columna Esperada: 0.50 m)")
+  st.subheader(
+      f"🎯 Validación de la Prueba (Columna Seleccionada: {altura_referencia:.2f}"
+      " m)"
+  )
 
-  # Nota: 'altura_mca' se calcula con las variables globales de abajo, 
-  # por lo que podemos calcular una vista previa aquí mismo para mostrarlo en la pestaña:
   _delta_baro = s0_baro - s_baro
   _efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
   if tipo_modelo == "Polinomial":
-    _presion_kPa = (coef_a * (prom_inm_l**2)) + (coef_b * prom_inm_l) + c_constante - _efecto_termico + _delta_baro
+    _presion_kPa = (
+        (coef_a * (prom_inm_l**2))
+        + (coef_b * prom_inm_l)
+        + c_constante
+        - _efecto_termico
+        + _delta_baro
+    )
   else:
-    _presion_kPa = cf_factor * (prom_sat_l0 - prom_inm_l) - _efecto_termico + _delta_baro
-  
+    _presion_kPa = (
+        cf_factor * (prom_sat_l0 - prom_inm_l)
+        - _efecto_termico
+        + _delta_baro
+    )
+
   _altura_mca_preview = _presion_kPa / 9.81
-  diferencia_m = abs(_altura_mca_preview - 0.50)
+  diferencia_m = abs(_altura_mca_preview - altura_referencia)
 
   col_v1, col_v2 = st.columns(2)
   with col_v1:
     st.metric(
-        label="Columna Calculada vs Real",
+        label="Columna Calculada vs Referencia",
         value=f"{_altura_mca_preview:.3f} mca",
-        delta=f"{_altura_mca_preview - 0.50:+.3f} m",
+        delta=f"{_altura_mca_preview - altura_referencia:+.3f} m",
     )
 
   with col_v2:
     if diferencia_m <= 0.05:
       st.success(
-          "✅ **PRUEBA APROBADA**: El sensor responde correctamente a la columna de 0.5m (±5 cm)."
+          f"✅ **PRUEBA APROBADA**: El sensor responde correctamente a la"
+          f" columna de {altura_referencia:.2f}m (±5 cm)."
       )
     else:
       st.error(
-          "⚠️ **REVISAR**: La lectura difiere más de 5 cm de la columna real. Verifique constantes o posibles burbujas."
+          f"⚠️ **REVISAR**: La lectura difiere más de 5 cm de la columna de"
+          f" referencia ({altura_referencia:.2f}m). Verifique constantes o"
+          " burbujas."
       )
         
 # CÁLCULOS GLOBALES
