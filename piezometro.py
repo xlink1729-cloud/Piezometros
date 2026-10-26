@@ -360,7 +360,23 @@ with tab3:
   col_v1, col_v2 = st.columns(2)
   with col_v1:
     st.metric(
-        label="Promedio Presión
+        label="Promedio Presión / Columna",
+        value=f"{altura_mca:.3f} mca",
+        delta=f"{presion_kPa:.2f} kPa",
+    )
+
+  with col_v2:
+    if diferencia_m <= 0.05:
+      st.success(
+          f"✅ **PRUEBA APROBADA**: El promedio de la columna"
+          f" ({altura_mca:.3f} mca) coincide con la referencia de"
+          f" {altura_referencia:.2f}m (±5 cm)."
+      )
+    else:
+      st.error(
+          f"⚠️ **REVISAR**: El promedio difiere más de 5 cm de la referencia"
+          f" ({altura_referencia:.2f}m). Verifique constantes o burbujas."
+      )
         
 # CÁLCULOS GLOBALES
 delta_baro = s0_baro - s_baro
