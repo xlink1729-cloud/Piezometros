@@ -283,7 +283,7 @@ with tab3:
       "Seleccione la altura de la columna de agua de prueba (m):",
       min_value=0.0,
       max_value=1.0,
-      value=0.50,
+      value=0.30,
       step=0.05,
       format="%.2f m",
   )
@@ -293,67 +293,77 @@ with tab3:
       if d.get("tabla_inm")
       else crear_df_base(val_l_base=9743.0, val_t_base=29.3)
   )
+
+  # Función para calcular los mca fila por fila
+  def calcular_df_inm(df_origen):
+    filas_res = []
+    for idx, row in df_origen.iterrows():
+      l = row["Lectura (B units)"]
+      t = row["Temperatura (°C)"]
+      delta_baro = s0_baro - s_baro
+      efecto_termico = tk_factor * (prom_sat_t0 - t)
+      
+      if tipo_modelo == "Polinomial":
+        presion = (coef_a * (l**2)) + (coef_b * l) + c_constante - efecto_termico + delta_baro
+      else:
+        presion = cf_factor * (prom_sat_l0 - l) - efecto_termico + delta_baro
+      
+      mca_val = presion / 9.81
+      
+      fila_dict = row.to_dict()
+      fila_dict["Columna (mca)"] = round(mca_val, 3)
+      filas_res.append(fila_dict)
+    return pd.DataFrame(filas_res)
+
+  # Asegurarnos de que el dataframe inicial tenga la columna de mca calculada
+  if "Columna (mca)" not in df_inm_init.columns:
+    df_inm_init = calcular_df_inm(df_inm_init)
+
+  # Editor de datos (la columna "Columna (mca)" y "Lectura (#)" se bloquean para que solo se editen lecturas y temps)
   df_inm_editado = st.data_editor(
       df_inm_init,
       num_rows="fixed",
       use_container_width=True,
       key=f"ed_inm_{pozo_instalacion}",
+      disabled=["Lectura (#)", "Columna (mca)"]
   )
 
+  # Recalcular dinámicamente si el usuario modifica alguna lectura o temperatura
+  df_inm_final = calcular_df_inm(df_inm_editado)
+
   # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA EN INMERSO ---
-  st.session_state.datos_actuales["tabla_inm"] = df_inm_editado.to_dict(
+  st.session_state.datos_actuales["tabla_inm"] = df_inm_final.to_dict(
       orient="records"
   )
 
-  prom_inm_l = df_inm_editado["Lectura (B units)"].mean()
-  prom_inm_t = df_inm_editado["Temperatura (°C)"].mean()
+  prom_inm_l = df_inm_final["Lectura (B units)"].mean()
+  prom_inm_t = df_inm_final["Temperatura (°C)"].mean()
+  altura_mca = df_inm_final["Columna (mca)"].mean()
 
   # --- VALIDACIÓN AUTOMÁTICA DINÁMICA ---
   st.divider()
   st.subheader(
-      f"🎯 Validación de la Prueba (Columna Seleccionada: {altura_referencia:.2f}"
-      " m)"
+      f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m)"
   )
 
-  _delta_baro = s0_baro - s_baro
-  _efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
-  if tipo_modelo == "Polinomial":
-    _presion_kPa = (
-        (coef_a * (prom_inm_l**2))
-        + (coef_b * prom_inm_l)
-        + c_constante
-        - _efecto_termico
-        + _delta_baro
-    )
-  else:
-    _presion_kPa = (
-        cf_factor * (prom_sat_l0 - prom_inm_l)
-        - _efecto_termico
-        + _delta_baro
-    )
-
-  _altura_mca_preview = _presion_kPa / 9.81
-  diferencia_m = abs(_altura_mca_preview - altura_referencia)
+  diferencia_m = abs(altura_mca - altura_referencia)
 
   col_v1, col_v2 = st.columns(2)
   with col_v1:
     st.metric(
-        label="Columna Calculada vs Referencia",
-        value=f"{_altura_mca_preview:.3f} mca",
-        delta=f"{_altura_mca_preview - altura_referencia:+.3f} m",
+        label="Promedio Columna Calculada vs Referencia",
+        value=f"{altura_mca:.3f} mca",
+        delta=f"{altura_mca - altura_referencia:+.3f} m",
     )
 
   with col_v2:
     if diferencia_m <= 0.05:
       st.success(
-          f"✅ **PRUEBA APROBADA**: El sensor responde correctamente a la"
-          f" columna de {altura_referencia:.2f}m (±5 cm)."
+          f"✅ **PRUEBA APROBADA**: El promedio de la columna ({altura_mca:.3f} mca) coincide con la referencia de {altura_referencia:.2f}m (±5 cm)."
       )
     else:
       st.error(
-          f"⚠️ **REVISAR**: La lectura difiere más de 5 cm de la columna de"
-          f" referencia ({altura_referencia:.2f}m). Verifique constantes o"
-          " burbujas."
+          f"⚠️ **REVISAR**: El promedio difiere más de 5 cm de la referencia ({altura_referencia:.2f}m). Verifique constantes o burbujas."
       )
         
 # CÁLCULOS GLOBALES
