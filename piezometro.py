@@ -360,7 +360,7 @@ with tab3:
   col_v1, col_v2 = st.columns(2)
   with col_v1:
     st.metric(
-        label="Promedio Presión /
+        label="Promedio Presión
         
 # CÁLCULOS GLOBALES
 delta_baro = s0_baro - s_baro
