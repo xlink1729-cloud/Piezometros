@@ -294,7 +294,7 @@ with tab3:
       else crear_df_base(val_l_base=9743.0, val_t_base=29.3)
   )
 
-  # Función para calcular los mca fila por fila
+  # Función para calcular kPa y mca fila por fila en tiempo real
   def calcular_df_inm(df_origen):
     filas_res = []
     for idx, row in df_origen.iterrows():
@@ -302,30 +302,38 @@ with tab3:
       t = row["Temperatura (°C)"]
       delta_baro = s0_baro - s_baro
       efecto_termico = tk_factor * (prom_sat_t0 - t)
-      
+
       if tipo_modelo == "Polinomial":
-        presion = (coef_a * (l**2)) + (coef_b * l) + c_constante - efecto_termico + delta_baro
+        presion = (
+            (coef_a * (l**2))
+            + (coef_b * l)
+            + c_constante
+            - efecto_termico
+            + delta_baro
+        )
       else:
-        presion = cf_factor * (prom_sat_l0 - l) - efecto_termico + delta_baro
-      
+        presion = (
+            cf_factor * (prom_sat_l0 - l) - efecto_termico + delta_baro
+        )
+
       mca_val = presion / 9.81
-      
+
       fila_dict = row.to_dict()
+      fila_dict["Presión (kPa)"] = round(presion, 3)
       fila_dict["Columna (mca)"] = round(mca_val, 3)
       filas_res.append(fila_dict)
     return pd.DataFrame(filas_res)
 
-  # Asegurarnos de que el dataframe inicial tenga la columna de mca calculada
-  if "Columna (mca)" not in df_inm_init.columns:
-    df_inm_init = calcular_df_inm(df_inm_init)
+  # Asegurarnos de que el dataframe inicial tenga las columnas calculadas
+  df_inm_init = calcular_df_inm(df_inm_init)
 
-  # Editor de datos (la columna "Columna (mca)" y "Lectura (#)" se bloquean para que solo se editen lecturas y temps)
+  # Editor de datos (bloqueamos las columnas calculadas para evitar edición manual)
   df_inm_editado = st.data_editor(
       df_inm_init,
       num_rows="fixed",
       use_container_width=True,
       key=f"ed_inm_{pozo_instalacion}",
-      disabled=["Lectura (#)", "Columna (mca)"]
+      disabled=["Lectura (#)", "Presión (kPa)", "Columna (mca)"],
   )
 
   # Recalcular dinámicamente si el usuario modifica alguna lectura o temperatura
@@ -338,6 +346,7 @@ with tab3:
 
   prom_inm_l = df_inm_final["Lectura (B units)"].mean()
   prom_inm_t = df_inm_final["Temperatura (°C)"].mean()
+  presion_kPa = df_inm_final["Presión (kPa)"].mean()
   altura_mca = df_inm_final["Columna (mca)"].mean()
 
   # --- VALIDACIÓN AUTOMÁTICA DINÁMICA ---
@@ -351,20 +360,7 @@ with tab3:
   col_v1, col_v2 = st.columns(2)
   with col_v1:
     st.metric(
-        label="Promedio Columna Calculada vs Referencia",
-        value=f"{altura_mca:.3f} mca",
-        delta=f"{altura_mca - altura_referencia:+.3f} m",
-    )
-
-  with col_v2:
-    if diferencia_m <= 0.05:
-      st.success(
-          f"✅ **PRUEBA APROBADA**: El promedio de la columna ({altura_mca:.3f} mca) coincide con la referencia de {altura_referencia:.2f}m (±5 cm)."
-      )
-    else:
-      st.error(
-          f"⚠️ **REVISAR**: El promedio difiere más de 5 cm de la referencia ({altura_referencia:.2f}m). Verifique constantes o burbujas."
-      )
+        label="Promedio Presión /
         
 # CÁLCULOS GLOBALES
 delta_baro = s0_baro - s_baro
