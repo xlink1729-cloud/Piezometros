@@ -67,20 +67,22 @@ if "datos_actuales" not in st.session_state:
       "modelo": "Polinomial",
       "x": 350120.00,
       "y": 2840500.00,
-      "z": 616.500,
+      "z": 613.140,
       "prof_pozo": 35.0,
-      "prof_inst": 30.0,
-      "naf": 5.50,
-      "a": -3.9602e-07,
-      "b": -1.9458e-01,
+      "prof_inst": 23.50,
+      "naf": 22.00,
+      "a": 2.1412e-07,
+      "b": -1.0452e-01,
       "cf": 0.0,
-      "tk": 1.1566e-02,
+      "tk": 1.2702e-02,
       "s0_baro": 101.325,
       "s_baro": 101.325,
-      "notas": "",  # Campo para observaciones de campo
+      "notas": "",
       "tabla_seco": None,
       "tabla_sat": None,
       "tabla_inm": None,
+      "l_campo": 8436.900,
+      "t_campo": 28.10,
   }
 
 d = st.session_state.datos_actuales
@@ -88,7 +90,6 @@ d = st.session_state.datos_actuales
 # --- BARRA LATERAL: CARGAR / GUARDAR SIEMPRE VISIBLES ---
 st.sidebar.header("📂 1. Gestión de Ficha (.txt)")
 
-# Botón rápido para limpiar y registrar un sensor nuevo
 if st.sidebar.button(
     "✨ Registrar Nuevo Sensor / Pozo Limpio", use_container_width=True
 ):
@@ -112,10 +113,11 @@ if st.sidebar.button(
       "tabla_seco": None,
       "tabla_sat": None,
       "tabla_inm": None,
+      "l_campo": 8436.900,
+      "t_campo": 28.10,
   }
   st.rerun()
 
-# Cargar Ficha Existente
 archivo_subido = st.sidebar.file_uploader(
     "Cargar Ficha de Pozo (.txt)", type=["txt"]
 )
@@ -152,25 +154,25 @@ coord_y = st.sidebar.number_input(
     "Coordenada Y", value=float(d.get("y", 0.0)), format="%.2f"
 )
 cota_instalacion = st.sidebar.number_input(
-    "Cota Z (m.s.n.m.)", value=float(d.get("z", 0.0)), format="%.3f"
+    "Cota Z (m.s.n.m.)", value=float(d.get("z", 613.14)), format="%.3f"
 )
 prof_pozo_val = st.sidebar.number_input(
     "Prof. Pozo (m)", value=float(d.get("prof_pozo", 35.0)), format="%.2f"
 )
 prof_inst_val = st.sidebar.number_input(
-    "Prof. Inst. (m)", value=float(d.get("prof_inst", 30.0)), format="%.2f"
+    "Prof. Inst. (m)", value=float(d.get("prof_inst", 23.50)), format="%.2f"
 )
 naf_val = st.sidebar.number_input(
-    "NAF (m)", value=float(d.get("naf", 5.50)), format="%.2f"
+    "NAF (m)", value=float(d.get("naf", 22.00)), format="%.2f"
 )
 
 st.sidebar.subheader("Constantes del Fabricante")
 if tipo_modelo == "Polinomial":
   coef_a = st.sidebar.number_input(
-      "Constante A", value=float(d.get("a", -3.9602e-07)), format="%.4e"
+      "Constante A", value=float(d.get("a", 2.1412e-07)), format="%.4e"
   )
   coef_b = st.sidebar.number_input(
-      "Constante B", value=float(d.get("b", -1.9458e-01)), format="%.4e"
+      "Constante B", value=float(d.get("b", -1.0452e-01)), format="%.4e"
   )
   cf_factor = 0.0
 else:
@@ -182,7 +184,7 @@ else:
   coef_a, coef_b = 0.0, 0.0
 
 tk_factor = st.sidebar.number_input(
-    "Coef. Térmico (Tk)", value=float(d.get("tk", 1.1566e-02)), format="%.4e"
+    "Coef. Térmico (Tk)", value=float(d.get("tk", 1.2702e-02)), format="%.4e"
 )
 
 st.sidebar.subheader("Presión Barométrica")
@@ -193,22 +195,22 @@ s_baro = st.sidebar.number_input(
     "S Actual (kPa)", value=float(d.get("s_baro", 101.325)), format="%.3f"
 )
 
-# RECUADRO DE NOTAS / OBSERVACIONES EN LA BARRA LATERAL
 st.sidebar.subheader("📝 Observaciones / Notas de Campo")
 notas_campo = st.sidebar.text_area(
     "Registro de novedades en pozo:",
     value=d.get("notas", ""),
-    placeholder="Ej: Pozo B1-3A asolvado a los 22m, freatímetro indica obstrucción...",
+    placeholder="Ej: Pozo B1-3A asolvado...",
     height=100,
 )
 
 
 # --- PESTAÑAS DE REGISTRO ---
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "1. Fase En Seco",
     "2. Fase Saturado (L0)",
-    "3. Fase Inmerso (0.5m)",
-    "4. Resumen Ejecutivo y Observaciones",
+    "3. Fase Inmerso",
+    "4. Instalación en Campo",
+    "5. Resumen Ejecutivo y Observaciones",
 ])
 
 # --- TAB 1: SECO ---
@@ -227,7 +229,6 @@ with tab1:
       key=f"ed_sec_{pozo_instalacion}",
   )
 
-  # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA EN SECO ---
   st.session_state.datos_actuales["tabla_seco"] = df_seco_editado.to_dict(
       orient="records"
   )
@@ -238,7 +239,7 @@ with tab1:
       f"Promedio En Seco — Lectura: **{prom_seco_l:.3f} B** | Temp:"
       f" **{prom_seco_t:.2f} °C**"
   )
-    
+
 # --- TAB 2: SATURADO ---
 with tab2:
   st.header(f"b) Registro Saturado (Lectura Cero L0) — Pozo: {pozo_instalacion}")
@@ -246,7 +247,7 @@ with tab2:
   df_sat_init = (
       pd.DataFrame(d["tabla_sat"])
       if d.get("tabla_sat")
-      else crear_df_base(val_l_base=9758.0, val_t_base=25.7)
+      else crear_df_base(val_l_base=8582.86, val_t_base=26.5)
   )
   df_sat_editado = st.data_editor(
       df_sat_init,
@@ -255,7 +256,6 @@ with tab2:
       key=f"ed_sat_{pozo_instalacion}",
   )
 
-  # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA ---
   st.session_state.datos_actuales["tabla_sat"] = df_sat_editado.to_dict(
       orient="records"
   )
@@ -273,12 +273,11 @@ with tab2:
   )
   if tipo_modelo == "Polinomial":
     st.warning(f"🔧 **Constante C:** `{c_constante:.3f}` kPa")
-      
+
 # --- TAB 3: INMERSO ---
 with tab3:
   st.header(f"c) Registro Inmerso — Pozo: {pozo_instalacion}")
 
-  # Selector deslizante de la columna de agua de referencia (de 0 a 1 m)
   altura_referencia = st.slider(
       "Seleccione la altura de la columna de agua de prueba (m):",
       min_value=0.0,
@@ -294,7 +293,7 @@ with tab3:
       else crear_df_base(val_l_base=9743.0, val_t_base=29.3)
   )
 
-  # Función para calcular kPa y mca fila por fila en tiempo real
+
   def calcular_df_inm(df_origen):
     filas_res = []
     for idx, row in df_origen.iterrows():
@@ -324,10 +323,9 @@ with tab3:
       filas_res.append(fila_dict)
     return pd.DataFrame(filas_res)
 
-  # Asegurarnos de que el dataframe inicial tenga las columnas calculadas
+
   df_inm_init = calcular_df_inm(df_inm_init)
 
-  # Editor de datos (bloqueamos las columnas calculadas para evitar edición manual)
   df_inm_editado = st.data_editor(
       df_inm_init,
       num_rows="fixed",
@@ -336,10 +334,8 @@ with tab3:
       disabled=["Lectura (#)", "Presión (kPa)", "Columna (mca)"],
   )
 
-  # Recalcular dinámicamente si el usuario modifica alguna lectura o temperatura
   df_inm_final = calcular_df_inm(df_inm_editado)
 
-  # --- LÍNEA CLAVE PARA CONGELAR TUS DATOS Y HORA EN INMERSO ---
   st.session_state.datos_actuales["tabla_inm"] = df_inm_final.to_dict(
       orient="records"
   )
@@ -349,7 +345,6 @@ with tab3:
   presion_kPa = df_inm_final["Presión (kPa)"].mean()
   altura_mca = df_inm_final["Columna (mca)"].mean()
 
-  # --- VALIDACIÓN AUTOMÁTICA DINÁMICA ---
   st.divider()
   st.subheader(
       f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m)"
@@ -377,8 +372,134 @@ with tab3:
           f"⚠️ **REVISAR**: El promedio difiere más de 5 cm de la referencia"
           f" ({altura_referencia:.2f}m). Verifique constantes o burbujas."
       )
-        
-# CÁLCULOS GLOBALES
+
+# --- TAB 4: INSTALACIÓN EN CAMPO ---
+with tab4:
+  st.header(f"d) Monitoreo e Instalación Real en Campo — Pozo: {pozo_instalacion}")
+
+  st.subheader("1. Parámetros Geométricos del Pozo")
+  col_g1, col_g2, col_g3 = st.columns(3)
+  with col_g1:
+    prof_inst_c = st.number_input(
+        "Profundidad de Instalación (m):",
+        value=float(prof_inst_val),
+        step=0.10,
+        format="%.2f",
+        key=f"prof_inst_c_{pozo_instalacion}",
+    )
+  with col_g2:
+    elev_sensor_c = st.number_input(
+        "Elevación del Sensor Z (m.s.n.m.):",
+        value=float(cota_instalacion),
+        step=0.01,
+        format="%.3f",
+        key=f"elev_sensor_c_{pozo_instalacion}",
+    )
+  with col_g3:
+    naf_previo = st.number_input(
+        "NAF Medido con Sonda antes de instalar (m):",
+        value=float(naf_val),
+        step=0.10,
+        format="%.2f",
+        key=f"naf_prev_c_{pozo_instalacion}",
+    )
+
+  st.divider()
+  st.subheader("2. Lecturas In Situ del Sensor de Cuerda Vibrante")
+
+  col_l1, col_l2 = st.columns(2)
+  with col_l1:
+    l_campo = st.number_input(
+        "Lectura en Campo (B units):",
+        value=float(d.get("l_campo", 8436.900)),
+        step=0.100,
+        format="%.3f",
+        key=f"l_campo_{pozo_instalacion}",
+    )
+  with col_l2:
+    t_campo = st.number_input(
+        "Temperatura en Campo (°C):",
+        value=float(d.get("t_campo", 28.10)),
+        step=0.10,
+        format="%.2f",
+        key=f"t_campo_{pozo_instalacion}",
+    )
+
+  # Guardar en estado de sesión
+  st.session_state.datos_actuales["l_campo"] = l_campo
+  st.session_state.datos_actuales["t_campo"] = t_campo
+
+  # --- CÁLCULOS MATEMÁTICOS DE CAMPO ---
+  FACTOR_KPA_MCA = 0.101974
+
+  delta_baro_c = s0_baro - s_baro
+  efecto_termico_c = tk_factor * (prom_sat_t0 - t_campo)
+
+  # 1. Cálculo Lineal
+  p_lineal_c = (
+      cf_factor * (prom_sat_l0 - l_campo) - efecto_termico_c + delta_baro_c
+  )
+  mca_lineal_c = p_lineal_c * FACTOR_KPA_MCA
+  elev_lineal_c = elev_sensor_c + mca_lineal_c
+
+  # 2. Cálculo Polinomial
+  c_constante_campo = -(coef_a * (prom_sat_l0**2) + coef_b * prom_sat_l0)
+  p_poli_c = (
+      (coef_a * (l_campo**2))
+      + (coef_b * l_campo)
+      + c_constante_campo
+      - efecto_termico_c
+      + delta_baro_c
+  )
+  mca_poli_c = p_poli_c * FACTOR_KPA_MCA
+  elev_poli_c = elev_sensor_c + mca_poli_c
+
+  # 3. Columna Teórica Esperada basada en Sonda Eléctrica
+  mca_teorico = max(0.0, prof_inst_c - naf_previo)
+  elev_teorica = elev_sensor_c + mca_teorico
+
+  st.divider()
+  st.subheader("3. Comparativa y Resultados de Validación")
+
+  m1, m2, m3 = st.columns(3)
+  with m1:
+    st.metric(
+        label="Nivel Teórico (Sonda Manual)",
+        value=f"{elev_teorica:.3f} m.s.n.m.",
+        delta=f"Columna: {mca_teorico:.2f} m",
+    )
+  with m2:
+    st.metric(
+        label="Cálculo Fórmula Lineal",
+        value=f"{elev_lineal_c:.3f} m.s.n.m.",
+        delta=f"Presión: {p_lineal_c:.2f} kPa",
+    )
+  with m3:
+    st.metric(
+        label="Cálculo Fórmula Polinomial",
+        value=f"{elev_poli_c:.3f} m.s.n.m.",
+        delta=f"Presión: {p_poli_c:.2f} kPa",
+    )
+
+  dif_teorica_poli = abs(elev_poli_c - elev_teorica)
+
+  st.markdown("### 📋 Diagnóstico de Verificación in Situ")
+  if dif_teorica_poli <= 1.0:
+    st.success(
+        f"✅ **ELEVACIÓN VALIDADA**: La lectura del sensor arroja"
+        f" **{elev_poli_c:.3f} m.s.n.m.** con el modelo polinomial, lo cual"
+        f" presenta una variación de solo **{dif_teorica_poli:.3f} m** respecto"
+        " a la estimación previa del pozo. El equipo está midiendo correctamente."
+    )
+  else:
+    st.warning(
+        f"⚠️ **ATENCIÓN**: Existe una diferencia de **{dif_teorica_poli:.3f} m**"
+        " entre el nivel freático estimado previo y la lectura del sensor."
+        " Verifique si el pozo ha sufrido recarga hidráulica reciente o revalide"
+        " la cota Z."
+    )
+
+# CÁLCULOS GLOBALES PARA EL RESUMEN
 delta_baro = s0_baro - s_baro
 efecto_termico = tk_factor * (prom_sat_t0 - prom_inm_t)
 
@@ -411,7 +532,7 @@ datos_guardar = {
     "tk": tk_factor,
     "s0_baro": s0_baro,
     "s_baro": s_baro,
-    "notas": notas_campo,  # Guarda la nota en la ficha .txt
+    "notas": notas_campo,
     "tabla_seco": df_seco_editado.to_dict(orient="records"),
     "tabla_sat": df_sat_editado.to_dict(orient="records"),
     "tabla_inm": df_inm_editado.to_dict(orient="records"),
@@ -441,8 +562,8 @@ st.sidebar.download_button(
     use_container_width=True,
 )
 
-# --- TAB 4: RESUMEN Y NOTAS ---
-with tab4:
+# --- TAB 5: RESUMEN Y NOTAS ---
+with tab5:
   st.header(
       f"📋 Resumen Ejecutivo — Pozo: {pozo_instalacion} | Sensor: {sensor_id}"
   )
@@ -466,7 +587,7 @@ with tab4:
     st.write(f"**Coef. Térmico ($Tk$):** {tk_factor:.4e}")
 
   with col_sum3:
-    st.subheader("📊 Resultados Prueba (0.5m)")
+    st.subheader("📊 Resultados Prueba (Inmerso)")
     st.write(f"**Lectura Inmerso ($L$):** {prom_inm_l:.3f} B")
     st.write(f"**Presión Calculada:** {presion_kPa:.2f} kPa")
     st.write(f"**Columna de Agua:** {altura_mca:.3f} mca")
@@ -474,7 +595,6 @@ with tab4:
 
   st.divider()
 
-  # VISUALIZACIÓN DE NOTAS EN EL RESUMEN
   st.subheader("📌 Observaciones / Novedades de Campo Registradas")
   if notas_campo.strip():
     st.info(f"✍️ **Nota:** {notas_campo}")
@@ -483,7 +603,6 @@ with tab4:
 
   st.divider()
 
-  # EXPORTACIÓN EXCEL / CSV (incluye la columna de notas)
   df_export = pd.DataFrame([datos_guardar])
   st.download_button(
       label="📥 Descargar Reporte en Excel / CSV",
