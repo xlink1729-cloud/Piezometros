@@ -91,18 +91,19 @@ def ficha_vacia():
         "lectura_fabrica_seco": 0.0,
         "inmersion_fecha": "", "inmersion_hora": "",
         "altura_referencia": 0.30,
+        "offset_diafragma_cm": 0.0,
         "l_campo": 0.0, "t_campo": 0.0,
         # Criterios de aceptación (ajústalos a tu procedimiento)
         "crit_n_min": 5, "crit_tol_rango": 1.0, "crit_tol_fabrica": 0.0,
         "crit_horas_sat": 24.0, "crit_tol_inm": 0.05, "crit_tol_campo": 1.0,
         "crit_umbral_salto": 0.5,
-        "tabla_seco": None, "tabla_sat": None, "tabla_inm": None, "tabla_seg": None,
+        "tabla_seco": None, "tabla_sat": None, "tabla_inm": None, "tabla_seg": None, "tabla_alt": None,
     }
 
 
 CLAVES_NUM = [
     "x", "y", "z", "prof_pozo", "prof_inst", "naf", "a", "b", "cf", "tk",
-    "s0_baro", "s_baro", "lectura_fabrica_seco", "altura_referencia",
+    "s0_baro", "s_baro", "lectura_fabrica_seco", "altura_referencia", "offset_diafragma_cm",
     "l_campo", "t_campo", "crit_n_min", "crit_tol_rango", "crit_tol_fabrica",
     "crit_horas_sat", "crit_tol_inm", "crit_tol_campo", "crit_umbral_salto",
 ]
@@ -167,6 +168,9 @@ def editor(nombre, columnas, dinamico=False):
         vc.COL_HORA: st.column_config.TextColumn(vc.COL_HORA, help="HH:MM (24 h)"),
         vc.COL_L: st.column_config.NumberColumn(vc.COL_L, format="%.3f", step=0.1),
         vc.COL_T: st.column_config.NumberColumn(vc.COL_T, format="%.2f", step=0.1),
+        vc.COL_ALT: st.column_config.NumberColumn(
+            vc.COL_ALT, format="%.1f", step=0.5, help="Altura del agua medida desde el punto de referencia que uses"
+        ),
         vc.COL_BARO: st.column_config.NumberColumn(
             vc.COL_BARO, format="%.3f", help="Opcional. Vacío = usa la S actual de la ficha"
         ),
@@ -372,6 +376,16 @@ with tab3:
         value=float(min(max(d["altura_referencia"], 0.0), 1.0)), step=0.05, format="%.2f m",
         key=f"alt_{v}",
     )
+    offset_diafragma_cm = st.number_input(
+        "Distancia del diafragma bajo tu punto de medición (cm)",
+        value=float(d["offset_diafragma_cm"]), step=0.5, format="%.1f", key=f"off_{v}",
+        help=(
+            "Mides la altura del agua desde la piedra porosa, pero el sensor mide en el diafragma. "
+            "Positivo si el diafragma queda más profundo que tu punto de medición (piedra hacia arriba); "
+            "negativo si queda más somero. Se estima en la calibración con varias alturas, más abajo."
+        ),
+    )
+    referencia_efectiva = altura_referencia + offset_diafragma_cm / 100.0
     st.caption(NOTA_TABLA)
     df_inm = editor("inm", vc.COLS_BASE)
     res_inm = vc.resumir_tabla(df_inm)
@@ -384,7 +398,7 @@ with tab3:
         tabla_inm = vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro)
         tabla_inm = tabla_inm[pd.to_numeric(tabla_inm[vc.COL_L], errors="coerce").notna()].copy()
         tabla_inm[f"¿Dentro de ±{crit_tol_inm:.2f} m?"] = [
-            "✅" if abs(c - altura_referencia) <= crit_tol_inm else "❌"
+            "✅" if abs(c - referencia_efectiva) <= crit_tol_inm else "❌"
             for c in tabla_inm[vc.COL_MCA]
         ]
         st.markdown("**Presión y columna calculadas por cada lectura**")
@@ -396,16 +410,22 @@ with tab3:
         presion_inm = float(tabla_inm[vc.COL_P].mean())
         altura_inm = float(tabla_inm[vc.COL_MCA].mean())
         det_inm = vc.analizar_columnas(
-            list(tabla_inm[vc.COL_MCA]), altura_referencia, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
+            list(tabla_inm[vc.COL_MCA]), referencia_efectiva, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
         )
         est_inm_val = vc.validar_inmersion_detallada(
-            list(tabla_inm[vc.COL_MCA]), altura_referencia, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
+            list(tabla_inm[vc.COL_MCA]), referencia_efectiva, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
         )
     elif res_inm["n"]:
         est_inm_val = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
 
     st.divider()
-    st.subheader(f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m)")
+    if offset_diafragma_cm:
+        st.subheader(
+            f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m "
+            f"{offset_diafragma_cm:+.1f} cm = {referencia_efectiva:.3f} m)"
+        )
+    else:
+        st.subheader(f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m)")
     col_v1, col_v2 = st.columns(2)
     with col_v1:
         st.metric("Promedio Presión / Columna", f"{fmt(altura_inm)} mca", delta=f"{fmt(presion_inm, 2)} kPa")
@@ -427,6 +447,36 @@ with tab3:
         )
     if not math.isnan(prom_inm_l) and not math.isnan(prom_sat_l0) and prom_inm_l >= prom_sat_l0:
         st.warning("⚠️ La lectura inmersa es mayor o igual que L0; con una columna de agua extra debería ser menor.")
+
+    st.divider()
+    st.subheader("🔬 Calibración de la distancia piedra–diafragma (varias alturas)")
+    st.caption(
+        "Repite la prueba a 2 o 3 alturas (p. ej. 20, 30 y 50 cm). Escribe en cada fila la altura medida y la "
+        "lectura (puedes repetir la altura en varias filas). Si el sensor mide a una distancia fija del punto "
+        "donde mides, la diferencia sale casi igual en todas las alturas: ese es el valor para el campo de arriba."
+    )
+    df_alt = editor("alt", vc.COLS_ALTURAS)
+    det_alt = None
+    if vc.serie_numerica(df_alt, vc.COL_L).notna().any():
+        if listo_calculo:
+            tabla_alt = vc.calcular_tabla_presion(df_alt, cal, prom_sat_l0, prom_sat_t0, s_baro)
+            det_alt = vc.analizar_calibracion_alturas(
+                [h / 100.0 for h in vc.serie_numerica(tabla_alt, vc.COL_ALT)], list(tabla_alt[vc.COL_MCA]),
+            )
+            if det_alt["por_altura"]:
+                filas = pd.DataFrame({
+                    "Altura (cm)": [round(h * 100, 1) for h in det_alt["por_altura"]],
+                    "Columna − altura (cm)": [round(x * 100, 2) for x in det_alt["por_altura"].values()],
+                })
+                con_ancho_total(st.dataframe, filas, hide_index=True)
+            mostrar_estado(det_alt["estado"], det_alt["mensaje"])
+            if det_alt["estado"] == vc.OK:
+                st.info(
+                    f"👉 Escribe **{det_alt['offset_m'] * 100:.1f}** en 'Distancia del diafragma bajo tu punto "
+                    "de medición (cm)' y, desde entonces, la prueba usará esa corrección."
+                )
+        else:
+            st.info("⏳ Falta la lectura cero (L0 y T0) o las constantes del modelo.")
 
 # --- TAB 4: INSTALACIÓN EN CAMPO ------------------------------------------
 with tab4:
@@ -578,6 +628,7 @@ datos_guardar = {
     "lectura_fabrica_seco": lectura_fabrica_seco,
     "inmersion_fecha": inmersion_fecha, "inmersion_hora": inmersion_hora,
     "altura_referencia": altura_referencia,
+    "offset_diafragma_cm": offset_diafragma_cm,
     "l_campo": l_campo, "t_campo": t_campo,
     "crit_n_min": crit_n_min, "crit_tol_rango": crit_tol_rango, "crit_tol_fabrica": crit_tol_fabrica,
     "crit_horas_sat": crit_horas_sat, "crit_tol_inm": crit_tol_inm, "crit_tol_campo": crit_tol_campo,
@@ -586,6 +637,7 @@ datos_guardar = {
     "tabla_sat": df_sat.to_dict(orient="records"),
     "tabla_inm": df_inm.to_dict(orient="records"),
     "tabla_seg": df_seg.to_dict(orient="records"),
+    "tabla_alt": df_alt.to_dict(orient="records"),
     # Resultados calculados (referencia; al cargar se recalculan)
     "prom_seco_l": prom_seco_l, "prom_seco_t": prom_seco_t,
     "prom_sat_l0": prom_sat_l0, "prom_sat_t0": prom_sat_t0,
@@ -637,7 +689,7 @@ with tab6:
         st.write(f"**Coef. Térmico ($Tk$):** {tk_factor:.4e}")
     with s3:
         st.subheader("📊 Resultados")
-        st.write(f"**Prueba inmersión:** {fmt(altura_inm)} mca (ref. {altura_referencia:.2f} m)")
+        st.write(f"**Prueba inmersión:** {fmt(altura_inm)} mca (ref. {referencia_efectiva:.3f} m)")
         st.write(f"**Lectura de campo:** {fmt(l_campo if campo_capturado else math.nan)} B")
         st.write(f"**Nivel de agua en campo:** {fmt(elev_campo)} m.s.n.m.")
         st.write(f"**Prof. al agua:** {fmt(prof_agua_campo, 2)} m")
