@@ -382,12 +382,25 @@ with tab3:
     listo_calculo = l0_ok and cal.tiene_constantes()
     if res_inm["n"] and listo_calculo:
         tabla_inm = vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro)
-        tabla_inm = tabla_inm[pd.to_numeric(tabla_inm[vc.COL_L], errors="coerce").notna()]
-        st.markdown("**Presión calculada por lectura**")
-        con_ancho_total(st.dataframe, tabla_inm[[vc.COL_NUM, vc.COL_L, vc.COL_T, vc.COL_P, vc.COL_MCA]], hide_index=True)
+        tabla_inm = tabla_inm[pd.to_numeric(tabla_inm[vc.COL_L], errors="coerce").notna()].copy()
+        tabla_inm[f"¿Dentro de ±{crit_tol_inm:.2f} m?"] = [
+            "✅" if abs(c - altura_referencia) <= crit_tol_inm else "❌"
+            for c in tabla_inm[vc.COL_MCA]
+        ]
+        st.markdown("**Presión y columna calculadas por cada lectura**")
+        con_ancho_total(
+            st.dataframe,
+            tabla_inm[[vc.COL_NUM, vc.COL_L, vc.COL_T, vc.COL_P, vc.COL_MCA, f"¿Dentro de ±{crit_tol_inm:.2f} m?"]],
+            hide_index=True,
+        )
         presion_inm = float(tabla_inm[vc.COL_P].mean())
         altura_inm = float(tabla_inm[vc.COL_MCA].mean())
-        est_inm_val = vc.validar_inmersion(altura_inm, altura_referencia, crit_tol_inm)
+        det_inm = vc.analizar_columnas(
+            list(tabla_inm[vc.COL_MCA]), altura_referencia, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
+        )
+        est_inm_val = vc.validar_inmersion_detallada(
+            list(tabla_inm[vc.COL_MCA]), altura_referencia, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
+        )
     elif res_inm["n"]:
         est_inm_val = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
 
@@ -396,6 +409,8 @@ with tab3:
     col_v1, col_v2 = st.columns(2)
     with col_v1:
         st.metric("Promedio Presión / Columna", f"{fmt(altura_inm)} mca", delta=f"{fmt(presion_inm, 2)} kPa")
+        if res_inm["n"] and not math.isnan(altura_inm):
+            st.caption(f"Mínimo – máximo de las lecturas: {det_inm['minimo']:.3f} – {det_inm['maximo']:.3f} mca")
     with col_v2:
         est_inm_estab = vc.evaluar_estabilidad(res_inm, crit_n_min, crit_tol_rango)
         mostrar_estado(*est_inm_val)
