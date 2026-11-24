@@ -310,6 +310,59 @@ def validar_inmersion(mca_medida, mca_referencia, tol) -> tuple[str, str]:
                    f"dif. {dif:+.3f} m supera ±{tol:.2f} m. Revisa constantes, L0, burbujas o la altura real.")
 
 
+def analizar_columnas(columnas, mca_ref, tol, etiquetas=None) -> dict:
+    """Detalle de una prueba de inmersión: cada lectura, rango y tendencia.
+
+    columnas: columna de agua (m) calculada por lectura, en orden de captura.
+    Tendencia: se avisa si >= 80 % de los pasos van en el mismo sentido y la
+    deriva total (última - primera) supera max(tol/2, 1 cm).
+    """
+    vals = [(i, _num(c)) for i, c in enumerate(columnas)]
+    vals = [(i, c) for i, c in vals if not _nan(c)]
+    etiquetas = etiquetas or [f"Lectura {i + 1}" for i in range(len(columnas))]
+    res = {"n": len(vals), "prom": math.nan, "minimo": math.nan, "maximo": math.nan,
+           "fuera": [], "tendencia": None, "deriva": math.nan}
+    if not vals:
+        return res
+    serie = [c for _, c in vals]
+    res["prom"] = sum(serie) / len(serie)
+    res["minimo"], res["maximo"] = min(serie), max(serie)
+    res["fuera"] = [etiquetas[i] for i, c in vals if abs(c - mca_ref) > tol]
+    if len(serie) >= 4:
+        pasos = [b - a for a, b in zip(serie, serie[1:])]
+        res["deriva"] = serie[-1] - serie[0]
+        subiendo = sum(1 for p in pasos if p > 0)
+        bajando = sum(1 for p in pasos if p < 0)
+        umbral = max(tol / 2, 0.01)
+        if abs(res["deriva"]) >= umbral:
+            if subiendo >= 0.8 * len(pasos):
+                res["tendencia"] = "subiendo"
+            elif bajando >= 0.8 * len(pasos):
+                res["tendencia"] = "bajando"
+    return res
+
+
+def validar_inmersion_detallada(columnas, mca_ref, tol, etiquetas=None) -> tuple[str, str]:
+    """Aprueba solo si el promedio Y cada lectura están dentro de la tolerancia.
+
+    Además avisa si las lecturas van en una sola dirección (sensor sin estabilizar).
+    """
+    det = analizar_columnas(columnas, mca_ref, tol, etiquetas)
+    if det["n"] == 0:
+        return PENDIENTE, "Captura las lecturas de la prueba de inmersión."
+    estado, msg = validar_inmersion(det["prom"], mca_ref, tol)
+    rango = f" Rango de lecturas: {det['minimo']:.3f} a {det['maximo']:.3f} m."
+    if estado == ERROR:
+        return ERROR, msg + rango
+    if det["fuera"]:
+        return ERROR, (f"El promedio cumple, pero {len(det['fuera'])} lectura(s) quedan fuera de "
+                       f"±{tol:.2f} m: {', '.join(det['fuera'])}." + rango)
+    if det["tendencia"]:
+        return AVISO, (msg + rango + f" Las lecturas van {det['tendencia']} ({det['deriva']:+.3f} m): "
+                       "puede haber burbujas o el sensor no se ha estabilizado.")
+    return OK, msg + rango
+
+
 def columna_teorica(prof_inst, naf) -> float:
     """Columna de agua esperada sobre el sensor según sonda manual (m)."""
     return max(0.0, float(prof_inst) - float(naf))
