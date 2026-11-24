@@ -30,6 +30,7 @@ COL_HORA = "Hora"
 COL_L = "Lectura (B units)"
 COL_T = "Temperatura (°C)"
 COL_BARO = "Baro (kPa)"
+COL_ALT = "Altura medida (cm)"
 COL_P = "Presión (kPa)"
 COL_MCA = "Columna (mca)"
 COL_NIVEL = "Nivel agua (m.s.n.m.)"
@@ -39,6 +40,7 @@ COL_ALERTA = "Alerta"
 
 COLS_BASE = [COL_NUM, COL_FECHA, COL_HORA, COL_L, COL_T]
 COLS_SEGUIMIENTO = [COL_FECHA, COL_HORA, COL_L, COL_T, COL_BARO]
+COLS_ALTURAS = [COL_ALT, COL_L, COL_T]
 
 # Estados de cada verificación
 OK, ERROR, AVISO, PENDIENTE, OMITIDO = "ok", "error", "aviso", "pendiente", "omitido"
@@ -134,23 +136,37 @@ def tabla_seguimiento_vacia(n: int = 3) -> pd.DataFrame:
     })
 
 
+def tabla_alturas_vacia(n: int = 9) -> pd.DataFrame:
+    """Calibración con varias alturas: una fila por lectura (repite la altura)."""
+    return pd.DataFrame({
+        COL_ALT: [math.nan] * n,
+        COL_L: [math.nan] * n,
+        COL_T: [math.nan] * n,
+    })
+
+
 def df_desde_registros(registros, columnas, n_default: int = 10) -> pd.DataFrame:
     """Reconstruye una tabla desde una lista de dicts (ficha .txt).
 
     Acepta fichas antiguas (con columnas calculadas de más) y valores nulos.
     """
     if not registros:
-        return tabla_vacia(n_default) if columnas == COLS_BASE else tabla_seguimiento_vacia()
+        if columnas == COLS_BASE:
+            return tabla_vacia(n_default)
+        if columnas == COLS_ALTURAS:
+            return tabla_alturas_vacia()
+        return tabla_seguimiento_vacia()
     df = pd.DataFrame(registros)
     for col in columnas:
         if col not in df.columns:
             df[col] = "" if col in (COL_FECHA, COL_HORA, COL_NUM) else math.nan
     df = df[columnas].copy()
-    for col in (COL_L, COL_T, COL_BARO):
+    for col in (COL_L, COL_T, COL_BARO, COL_ALT):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     for col in (COL_FECHA, COL_HORA):
-        df[col] = df[col].fillna("").astype(str)
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
     if COL_NUM in df.columns:
         df[COL_NUM] = df[COL_NUM].fillna("").astype(str)
     return df.reset_index(drop=True)
@@ -361,6 +377,61 @@ def validar_inmersion_detallada(columnas, mca_ref, tol, etiquetas=None) -> tuple
         return AVISO, (msg + rango + f" Las lecturas van {det['tendencia']} ({det['deriva']:+.3f} m): "
                        "puede haber burbujas o el sensor no se ha estabilizado.")
     return OK, msg + rango
+
+
+def analizar_calibracion_alturas(alturas_m, columnas_m, tol_consistencia: float = 0.01,
+                                 tol_pendiente: float = 0.03) -> dict:
+    """Estima la distancia fija entre el punto de medición y el diafragma.
+
+    alturas_m: altura medida (m) de cada lectura, desde el punto de referencia
+    que uses (p. ej. la piedra porosa). columnas_m: columna calculada (m) para
+    cada lectura. Si el sensor mide a una distancia fija d del punto medido:
+        columna = altura + d      (d > 0 si el diafragma queda más profundo)
+    Con varias alturas: d debe salir casi igual en todas (consistencia) y la
+    pendiente columna-vs-altura debe ser ~1. Si no, el problema no es una
+    distancia fija: revisa constantes, L0, burbujas o la altura medida.
+    """
+    pares = []
+    for h, c in zip(alturas_m, columnas_m):
+        h, c = _num(h), _num(c)
+        if not _nan(h) and not _nan(c) and h > 0:
+            pares.append((h, c))
+    res = {"n": len(pares), "n_alturas": 0, "offset_m": math.nan, "por_altura": {},
+           "dispersion": math.nan, "pendiente": math.nan, "estado": PENDIENTE, "mensaje": ""}
+    if not pares:
+        res["mensaje"] = "Captura la altura medida y las lecturas de cada altura."
+        return res
+    grupos: dict = {}
+    for h, c in pares:
+        grupos.setdefault(round(h, 4), []).append(c - h)
+    por_altura = {h: sum(v) / len(v) for h, v in grupos.items()}
+    res["por_altura"] = por_altura
+    res["n_alturas"] = len(por_altura)
+    res["offset_m"] = sum(por_altura.values()) / len(por_altura)
+    if len(por_altura) < 2:
+        res["mensaje"] = ("Con una sola altura no se puede separar una distancia fija de un error de "
+                          "constantes o de L0. Prueba al menos 2 alturas distintas.")
+        return res
+    res["dispersion"] = max(por_altura.values()) - min(por_altura.values())
+    hm = sum(h for h, _ in pares) / len(pares)
+    cm = sum(c for _, c in pares) / len(pares)
+    sxx = sum((h - hm) ** 2 for h, _ in pares)
+    res["pendiente"] = sum((h - hm) * (c - cm) for h, c in pares) / sxx if sxx > 0 else math.nan
+    avisos = []
+    if res["dispersion"] > tol_consistencia:
+        avisos.append(f"la diferencia cambia {res['dispersion'] * 100:.1f} cm entre alturas "
+                      f"(máx. {tol_consistencia * 100:.1f} cm)")
+    if not _nan(res["pendiente"]) and abs(res["pendiente"] - 1) > tol_pendiente:
+        avisos.append(f"la pendiente columna/altura es {res['pendiente']:.3f} (debería ser ≈1)")
+    if avisos:
+        res["estado"] = AVISO
+        res["mensaje"] = ("No parece una distancia fija: " + "; ".join(avisos) +
+                          ". Revisa constantes, L0, burbujas o la altura medida.")
+    else:
+        res["estado"] = OK
+        res["mensaje"] = (f"Distancia estimada: {res['offset_m'] * 100:+.1f} cm, consistente en "
+                          f"{len(por_altura)} alturas.")
+    return res
 
 
 def columna_teorica(prof_inst, naf) -> float:
