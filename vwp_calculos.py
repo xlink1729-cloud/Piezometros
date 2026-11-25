@@ -1,881 +1,580 @@
-"""Guía y verificación de piezómetros de cuerda vibrante (VWP).
+"""Cálculos para piezómetros de cuerda vibrante (VWP).
 
-Flujo: 1) lecturas en seco -> 2) saturación y lectura cero (L0) ->
-3) prueba de inmersión -> 4) instalación en campo -> 5) seguimiento -> 6) resumen.
+Funciones puras (sin Streamlit): se pueden probar con pytest y reutilizar
+más adelante desde otras apps o desde un agente.
 
-Los cálculos viven en vwp_calculos.py (deben estar en la misma carpeta).
+Convención de las fórmulas (la misma que usaba la versión anterior de la app):
+    Polinomial: P = A*L^2 + B*L + C - Tk*(T0 - T) + (S0 - S)
+                con C = -(A*L0^2 + B*L0)   (P = 0 en la lectura cero)
+    Lineal:     P = CF*(L0 - L) - Tk*(T0 - T) + (S0 - S)
+    Columna de agua (m) = P (kPa) * 0.101974
+Verifica que esta convención (signos de CF y Tk) coincida con el certificado
+de calibración de tu fabricante.
 """
 
-import json
+from __future__ import annotations
+
+import io
 import math
-import re
+from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
-import streamlit as st
 
-import vwp_calculos as vc
+FACTOR_KPA_MCA = 0.101974  # 1 kPa = 0.101974 m de columna de agua
 
-try:
-    from streamlit.errors import StreamlitAPIException
-except Exception:  # pragma: no cover
-    StreamlitAPIException = Exception
+COL_NUM = "Lectura (#)"
+COL_FECHA = "Fecha"
+COL_HORA = "Hora"
+COL_L = "Lectura (B units)"
+COL_T = "Temperatura (°C)"
+COL_BARO = "Baro (kPa)"
+COL_ALT = "Altura medida (cm)"
+COL_P = "Presión (kPa)"
+COL_MCA = "Columna (mca)"
+COL_NIVEL = "Nivel agua (m.s.n.m.)"
+COL_PROF = "Prof. al agua (m)"
+COL_DELTA = "Δ nivel vs anterior (m)"
+COL_ALERTA = "Alerta"
 
-try:
-    import openpyxl  # noqa: F401
+COLS_BASE = [COL_NUM, COL_FECHA, COL_HORA, COL_L, COL_T]
+COLS_SEGUIMIENTO = [COL_FECHA, COL_HORA, COL_L, COL_T, COL_BARO]
+COLS_ALTURAS = [COL_ALT, COL_L, COL_T]
 
-    HAY_EXCEL = True
-except ImportError:
-    HAY_EXCEL = False
-
-st.set_page_config(
-    page_title="Guía y Verificación de Piezómetros VWP",
-    page_icon="📊",
-    layout="wide",
-)
-
-st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
-st.markdown("Herramienta de campo con registro progresivo en archivo `.txt` por pozo.")
-banner = st.empty()  # se llena al final con el estado global
-
-# ---------------------------------------------------------------------------
-# Utilidades
-# ---------------------------------------------------------------------------
-ICONOS = {vc.OK: "✅", vc.ERROR: "❌", vc.AVISO: "⚠️", vc.PENDIENTE: "⏳", vc.OMITIDO: "➖"}
-RANGO = {vc.ERROR: 4, vc.PENDIENTE: 3, vc.AVISO: 2, vc.OK: 1, vc.OMITIDO: 0}
+# Estados de cada verificación
+OK, ERROR, AVISO, PENDIENTE, OMITIDO = "ok", "error", "aviso", "pendiente", "omitido"
 
 
-def con_ancho_total(funcion, *args, **kwargs):
-    """Elemento a todo el ancho, en versiones nuevas y viejas de Streamlit."""
+def _num(x) -> float:
+    """Convierte a float; None, texto vacío o inválido -> NaN."""
     try:
-        return funcion(*args, width="stretch", **kwargs)
-    except (TypeError, StreamlitAPIException):
-        return funcion(*args, use_container_width=True, **kwargs)
+        if x is None:
+            return math.nan
+        if isinstance(x, str) and not x.strip():
+            return math.nan
+        return float(x)
+    except (TypeError, ValueError):
+        return math.nan
 
 
-def fmt(x, dec=3, sufijo=""):
-    x = vc._num(x)
-    return "—" if math.isnan(x) else f"{x:.{dec}f}{sufijo}"
+def _nan(x) -> bool:
+    return isinstance(x, float) and math.isnan(x)
 
 
-def mostrar_estado(estado, texto):
-    funcion = {vc.OK: st.success, vc.ERROR: st.error, vc.AVISO: st.warning}.get(estado, st.info)
-    funcion(f"{ICONOS[estado]} {texto}")
+# --------------------------------------------------------------------------
+# Calibración y presión
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class Calibracion:
+    modelo: str = "Polinomial"  # "Polinomial" | "Lineal"
+    a: float = 0.0
+    b: float = 0.0
+    cf: float = 0.0
+    tk: float = 0.0
+    s0_baro: float = 101.325  # kPa, presión barométrica al tomar L0
+
+    def con_modelo(self, modelo: str) -> "Calibracion":
+        return replace(self, modelo=modelo)
+
+    def alterno(self) -> Optional["Calibracion"]:
+        """Cálculo con el otro modelo, si sus constantes están capturadas."""
+        if self.modelo == "Polinomial":
+            return self.con_modelo("Lineal") if self.cf != 0 else None
+        return self.con_modelo("Polinomial") if (self.a != 0 or self.b != 0) else None
+
+    def tiene_constantes(self) -> bool:
+        if self.modelo == "Polinomial":
+            return self.a != 0 or self.b != 0
+        return self.cf != 0
 
 
-def peor(*pares):
-    """Del conjunto de (estado, mensaje), el más grave."""
-    return max(pares, key=lambda p: RANGO[p[0]])
+def constante_c(a: float, b: float, l0: float) -> float:
+    """Constante C del modelo polinomial: hace P = 0 en la lectura cero."""
+    return -(a * l0**2 + b * l0)
 
 
-def con_conocida_y_variacion(tabla, referencia):
-    """Agrega 'Conocida (m)' y 'Variación (m)' (calculada - conocida), como en el reporte."""
-    t = tabla.copy()
-    t["Conocida (m)"] = round(referencia, 3)
-    t["Variación (m)"] = (pd.to_numeric(t[vc.COL_MCA], errors="coerce") - referencia).round(3)
-    return t
+def presion_kpa(cal: Calibracion, l, t, l0, t0, s_actual) -> float:
+    """Presión (kPa) para una lectura l (B) a temperatura t (°C)."""
+    l, t, l0, t0, s = (_num(v) for v in (l, t, l0, t0, s_actual))
+    if any(_nan(v) for v in (l, t, l0, t0, s)):
+        return math.nan
+    efecto_termico = cal.tk * (t0 - t)
+    delta_baro = cal.s0_baro - s
+    if cal.modelo == "Polinomial":
+        c = constante_c(cal.a, cal.b, l0)
+        return cal.a * l**2 + cal.b * l + c - efecto_termico + delta_baro
+    return cal.cf * (l0 - l) - efecto_termico + delta_baro
 
 
-ACTIVIDADES = [
-    "Recepción / verificación en seco",
-    "Saturación iniciada",
-    "Lectura cero (L0)",
-    "Prueba de inmersión",
-    "Instalación en pozo",
-    "Programa CR6 actualizado",
-    "Respaldo del CR6",
-    "GeoViewer actualizado",
-    "Verificación con geólogo",
-    "Lectura de seguimiento",
-    "Observación / incidencia",
-]
-COLS_BITACORA = ["Fecha", "Hora", "Responsable", "Actividad", "Detalle"]
+def kpa_a_mca(p) -> float:
+    p = _num(p)
+    return math.nan if _nan(p) else p * FACTOR_KPA_MCA
 
 
-def ahora_local():
-    """Fecha y hora de México (el servidor puede estar en UTC)."""
-    try:
-        from zoneinfo import ZoneInfo
-
-        return datetime.now(ZoneInfo("America/Mexico_City"))
-    except Exception:
-        return datetime.now()
-
-
-def limpiar_bitacora(entradas):
-    """Solo entradas válidas, con las columnas esperadas y en texto."""
-    limpias = []
-    for e in entradas or []:
-        if isinstance(e, dict):
-            limpias.append({c: str(e.get(c) or "") for c in COLS_BITACORA})
-    return limpias
+# --------------------------------------------------------------------------
+# Tablas de lecturas
+# --------------------------------------------------------------------------
+def tabla_vacia(n: int = 10) -> pd.DataFrame:
+    """Tabla de n lecturas SIN valores de ejemplo (nada inventado)."""
+    return pd.DataFrame({
+        COL_NUM: [f"Lectura {i}" for i in range(1, n + 1)],
+        COL_FECHA: [""] * n,
+        COL_HORA: [""] * n,
+        COL_L: [math.nan] * n,
+        COL_T: [math.nan] * n,
+    })
 
 
-def nombre_archivo(pozo):
-    limpio = re.sub(r"[^\w\-.]+", "_", (pozo or "").strip()).strip("_")
-    return limpio or "pozo_sin_nombre"
+def tabla_seguimiento_vacia(n: int = 3) -> pd.DataFrame:
+    return pd.DataFrame({
+        COL_FECHA: [""] * n,
+        COL_HORA: [""] * n,
+        COL_L: [math.nan] * n,
+        COL_T: [math.nan] * n,
+        COL_BARO: [math.nan] * n,
+    })
 
 
-# ---------------------------------------------------------------------------
-# Ficha (.txt = JSON)
-# ---------------------------------------------------------------------------
-def ficha_vacia():
+def tabla_alturas_vacia(n: int = 9) -> pd.DataFrame:
+    """Calibración con varias alturas: una fila por lectura (repite la altura)."""
+    return pd.DataFrame({
+        COL_ALT: [math.nan] * n,
+        COL_L: [math.nan] * n,
+        COL_T: [math.nan] * n,
+    })
+
+
+def df_desde_registros(registros, columnas, n_default: int = 10) -> pd.DataFrame:
+    """Reconstruye una tabla desde una lista de dicts (ficha .txt).
+
+    Acepta fichas antiguas (con columnas calculadas de más) y valores nulos.
+    """
+    if not registros:
+        if columnas == COLS_BASE:
+            return tabla_vacia(n_default)
+        if columnas == COLS_ALTURAS:
+            return tabla_alturas_vacia()
+        return tabla_seguimiento_vacia()
+    df = pd.DataFrame(registros)
+    for col in columnas:
+        if col not in df.columns:
+            df[col] = "" if col in (COL_FECHA, COL_HORA, COL_NUM) else math.nan
+    df = df[columnas].copy()
+    for col in (COL_L, COL_T, COL_BARO, COL_ALT):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in (COL_FECHA, COL_HORA):
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
+    if COL_NUM in df.columns:
+        df[COL_NUM] = df[COL_NUM].fillna("").astype(str)
+    return df.reset_index(drop=True)
+
+
+def serie_numerica(df, col) -> pd.Series:
+    if df is None or col not in getattr(df, "columns", []):
+        return pd.Series(dtype=float)
+    return pd.to_numeric(df[col], errors="coerce")
+
+
+def resumir_tabla(df, k_atipico: float = 3.5, min_atipico: float = 0.5) -> dict:
+    """Estadísticos de una tabla de lecturas (solo filas con lectura válida)."""
+    vacio = {"n": 0, "n_sin_temp": 0, "prom_l": math.nan, "prom_t": math.nan,
+             "rango": math.nan, "desv": math.nan, "deriva": math.nan, "atipicos": []}
+    l = serie_numerica(df, COL_L)
+    t = serie_numerica(df, COL_T)
+    validas = l.dropna()
+    if validas.empty:
+        return vacio
+    t_val = t[l.notna()]
+    n = len(validas)
     return {
-        "version_ficha": 2,
-        "id_sensor": "VW-NUEVO",
-        "pozo": "Nuevo-Pozo",
-        "modelo": "Polinomial",
-        "x": 0.0, "y": 0.0, "z": 0.0,
-        "prof_pozo": 0.0, "prof_inst": 0.0, "naf": 0.0,
-        # Constantes en 0 a propósito: se capturan del certificado del sensor.
-        "a": 0.0, "b": 0.0, "cf": 0.0, "tk": 0.0,
-        "s0_baro": 101.325, "s_baro": 101.325,
-        "notas": "",
-        "lectura_fabrica_seco": 0.0, "temp_fabrica": 0.0,
-        "baro_fabrica_hpa": 0.0, "baro_seco_hpa": 0.0,
-        "inmersion_fecha": "", "inmersion_hora": "",
-        "altura_referencia": 0.30,
-        "offset_diafragma_cm": 0.0,
-        "l_campo": 0.0, "t_campo": 0.0,
-        # Criterios de aceptación (ajústalos a tu procedimiento)
-        "crit_n_min": 5, "crit_tol_rango": 1.0, "crit_tol_fabrica": 0.0,
-        "crit_horas_sat": 24.0, "crit_tol_inm": 0.05, "crit_tol_campo": 1.0,
-        "crit_umbral_salto": 0.5,
-        "tabla_seco": None, "tabla_sat": None, "tabla_inm": None, "tabla_seg": None, "tabla_alt": None, "bitacora": None,
+        "n": n,
+        "n_sin_temp": int(t_val.isna().sum()),
+        "prom_l": float(validas.mean()),
+        "prom_t": float(t_val.mean()) if t_val.notna().any() else math.nan,
+        "rango": float(validas.max() - validas.min()),
+        "desv": float(validas.std(ddof=1)) if n >= 2 else 0.0,
+        "deriva": float(validas.iloc[-1] - validas.iloc[0]),
+        "atipicos": detectar_atipicos(validas, k_atipico, min_atipico),
     }
 
 
-CLAVES_NUM = [
-    "x", "y", "z", "prof_pozo", "prof_inst", "naf", "a", "b", "cf", "tk",
-    "s0_baro", "s_baro", "lectura_fabrica_seco", "temp_fabrica", "baro_fabrica_hpa", "baro_seco_hpa",
-    "altura_referencia", "offset_diafragma_cm",
-    "l_campo", "t_campo", "crit_n_min", "crit_tol_rango", "crit_tol_fabrica",
-    "crit_horas_sat", "crit_tol_inm", "crit_tol_campo", "crit_umbral_salto",
-]
+def detectar_atipicos(serie: pd.Series, k: float = 3.5, minimo: float = 0.5) -> list:
+    """Índices de lecturas lejanas a la mediana (MAD robusto).
+
+    Una lectura es atípica si se aleja de la mediana más de
+    max(k * 1.4826 * MAD, minimo) unidades B.
+    """
+    s = serie.dropna()
+    if len(s) < 4:
+        return []
+    med = float(s.median())
+    mad = float((s - med).abs().median())
+    umbral = max(k * 1.4826 * mad, minimo)
+    return [int(i) for i, v in s.items() if abs(v - med) > umbral]
 
 
-def normalizar_ficha(datos):
-    """Completa una ficha (también las antiguas) con los valores por defecto."""
-    base = ficha_vacia()
-    if not isinstance(datos, dict):
-        return base
-    ficha = dict(base)
-    ficha.update({k: v for k, v in datos.items() if v is not None})
-    for k in CLAVES_NUM:
-        x = vc._num(ficha.get(k))
-        ficha[k] = base[k] if math.isnan(x) else x
-    for k in ("id_sensor", "pozo", "notas", "inmersion_fecha", "inmersion_hora"):
-        ficha[k] = str(ficha.get(k) or "")
-    if ficha.get("modelo") not in ("Polinomial", "Lineal"):
-        ficha["modelo"] = "Polinomial"
-    return ficha
+def evaluar_estabilidad(res: dict, n_min: int, tol_rango: float) -> tuple[str, str]:
+    n = res["n"]
+    if n < n_min:
+        return PENDIENTE, f"{n} de {n_min} lecturas capturadas."
+    if res["n_sin_temp"] > 0:
+        return PENDIENTE, f"Faltan {res['n_sin_temp']} temperatura(s) en lecturas capturadas."
+    if tol_rango > 0 and res["rango"] > tol_rango:
+        return ERROR, (f"Rango entre lecturas {res['rango']:.2f} B "
+                       f"(máx. permitido {tol_rango:.2f} B). Espera a que se estabilice.")
+    msg = f"{n} lecturas, rango {res['rango']:.2f} B, desv. est. {res['desv']:.3f} B."
+    if res["atipicos"]:
+        return AVISO, msg + f" Posible(s) lectura(s) atípica(s): fila(s) {[i + 1 for i in res['atipicos']]}."
+    return OK, msg
 
 
-def exportar_pozo_txt(datos_pozo):
-    return json.dumps(vc.limpiar_para_json(datos_pozo), ensure_ascii=False, indent=4, allow_nan=False)
+def comparar_con_fabrica(prom, fabrica, tol) -> tuple[str, str]:
+    """Compara un promedio contra la lectura del certificado. fabrica=0 -> omitido."""
+    prom, fabrica, tol = _num(prom), _num(fabrica), _num(tol)
+    if _nan(fabrica) or fabrica == 0 or _nan(tol) or tol <= 0:
+        return OMITIDO, "Sin lectura de fábrica o sin tolerancia: no se evalúa."
+    if _nan(prom):
+        return PENDIENTE, "Faltan lecturas para comparar."
+    dif = prom - fabrica
+    if abs(dif) <= tol:
+        return OK, f"Diferencia con fábrica {dif:+.2f} B (tolerancia ±{tol:.2f} B)."
+    return ERROR, f"Diferencia con fábrica {dif:+.2f} B supera ±{tol:.2f} B."
 
 
-def importar_pozo_txt(contenido_txt):
-    try:
-        datos = json.loads(contenido_txt)
-        if not isinstance(datos, dict):
-            raise ValueError("el archivo no contiene una ficha de pozo")
-        return datos
-    except Exception as e:
-        st.sidebar.error(f"Error al cargar el archivo .txt: {e}")
+def lectura_esperada_en_aire(cal: Calibracion, r0, t0, s0_kpa, t, s_kpa) -> float:
+    """Lectura que debe dar el sensor al aire (presión manométrica 0) en el sitio.
+
+    r0, t0, s0_kpa: lectura cero de fábrica (B), su temperatura (°C) y la
+    barométrica de fábrica (kPa). t, s_kpa: temperatura y barométrica del
+    momento de la lectura. Corrige por temperatura y por presión del aire:
+    una diferencia de ~7 kPa entre fábrica y sitio mueve la lectura ~70 dígitos.
+    """
+    r0, t0, s0, t, s = (_num(x) for x in (r0, t0, s0_kpa, t, s_kpa))
+    if any(_nan(x) for x in (r0, t0, s0, t, s)):
+        return math.nan
+    c2 = replace(cal, s0_baro=s0)
+    if c2.modelo == "Lineal":
+        if c2.cf == 0:
+            return math.nan
+        return r0 + ((s0 - s) - c2.tk * (t0 - t)) / c2.cf
+    if c2.a == 0 and c2.b == 0:
+        return math.nan
+    l = r0  # Newton sobre P(L) = 0
+    for _ in range(60):
+        g = presion_kpa(c2, l, t, r0, t0, s)
+        dg = 2 * c2.a * l + c2.b
+        if dg == 0:
+            return math.nan
+        paso = g / dg
+        l -= paso
+        if abs(paso) < 1e-10:
+            break
+    return l
+
+
+def comparar_con_esperada(prom, esperada, tol) -> tuple[str, str]:
+    """Compara el promedio medido con la lectura esperada según fábrica."""
+    prom, esperada, tol = _num(prom), _num(esperada), _num(tol)
+    if _nan(esperada):
+        return OMITIDO, ("Captura lectura, temperatura y barométrica de fábrica, y la barométrica "
+                         "durante las lecturas, para comparar con fábrica.")
+    if _nan(prom):
+        return PENDIENTE, f"Lectura esperada según fábrica: {esperada:.1f} B. Faltan lecturas para comparar."
+    dif = prom - esperada
+    base = f"Esperada según fábrica {esperada:.1f} B, medida {prom:.1f} B (dif. {dif:+.1f} B)."
+    if _nan(tol) or tol <= 0:
+        return OMITIDO, base + " Define una tolerancia en 'Criterios de aceptación' para aprobarla automáticamente."
+    if abs(dif) <= tol:
+        return OK, base + f" Dentro de ±{tol:.1f} B."
+    return ERROR, base + f" Fuera de ±{tol:.1f} B: revisa el sensor, el golpe en el transporte o las barométricas."
+
+
+# --------------------------------------------------------------------------
+# Fechas y tiempos
+# --------------------------------------------------------------------------
+_FORMATOS_DT = ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S")
+
+
+def construir_dt(fecha, hora) -> Optional[datetime]:
+    def limpio(x):
+        if x is None or (isinstance(x, float) and math.isnan(x)):
+            return ""
+        return str(x).strip()
+
+    f, h = limpio(fecha), limpio(hora)
+    if not f or not h or f.lower() in ("nan", "none", "nat"):
         return None
+    for fmt in _FORMATOS_DT:
+        try:
+            return datetime.strptime(f"{f} {h}", fmt)
+        except ValueError:
+            continue
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Estado de sesión
-# ---------------------------------------------------------------------------
-if "datos_actuales" not in st.session_state:
-    st.session_state.datos_actuales = ficha_vacia()
-if "version" not in st.session_state:
-    st.session_state.version = 0
-
-d = st.session_state.datos_actuales
-v = st.session_state.version  # cambia al cargar/crear una ficha: reinicia los widgets
-
-
-def base_tabla(nombre, columnas):
-    """Tabla inicial estable durante la sesión de una ficha (no cambia en cada recarga)."""
-    clave = f"base_{nombre}_{v}"
-    if clave not in st.session_state:
-        st.session_state[clave] = vc.df_desde_registros(d.get("tabla_" + nombre), columnas)
-    return st.session_state[clave]
+def fechas_de_lecturas(df) -> list:
+    """Fecha-hora de cada fila con lectura válida y fecha/hora legible."""
+    if df is None or len(df) == 0:
+        return []
+    l = serie_numerica(df, COL_L)
+    out = []
+    for i in df.index:
+        if _nan(float(l.loc[i])):
+            continue
+        dt = construir_dt(df.at[i, COL_FECHA] if COL_FECHA in df else "",
+                          df.at[i, COL_HORA] if COL_HORA in df else "")
+        if dt is not None:
+            out.append(dt)
+    return out
 
 
-def editor(nombre, columnas, dinamico=False):
-    base = base_tabla(nombre, columnas)
-    cfg = {
-        vc.COL_FECHA: st.column_config.TextColumn(vc.COL_FECHA, help="AAAA-MM-DD"),
-        vc.COL_HORA: st.column_config.TextColumn(vc.COL_HORA, help="HH:MM (24 h)"),
-        vc.COL_L: st.column_config.NumberColumn(vc.COL_L, format="%.3f", step=0.1),
-        vc.COL_T: st.column_config.NumberColumn(vc.COL_T, format="%.2f", step=0.1),
-        vc.COL_ALT: st.column_config.NumberColumn(
-            vc.COL_ALT, format="%.1f", step=0.5, help="Altura del agua medida desde el punto de referencia que uses"
-        ),
-        vc.COL_BARO: st.column_config.NumberColumn(
-            vc.COL_BARO, format="%.3f", help="Opcional. Vacío = usa la S actual de la ficha"
-        ),
-    }
-    kwargs = {
-        "num_rows": "dynamic" if dinamico else "fixed",
-        "key": f"ed_{nombre}_{v}",
-        "column_config": {c: cfg[c] for c in base.columns if c in cfg},
-    }
-    if vc.COL_NUM in base.columns:
-        kwargs["disabled"] = [vc.COL_NUM]
-    return con_ancho_total(st.data_editor, base, **kwargs)
+def horas_saturacion(inicio: Optional[datetime], df_sat) -> Optional[float]:
+    dts = fechas_de_lecturas(df_sat)
+    if inicio is None or not dts:
+        return None
+    return (min(dts) - inicio).total_seconds() / 3600.0
 
 
-# ---------------------------------------------------------------------------
-# Barra lateral
-# ---------------------------------------------------------------------------
-st.sidebar.header("📂 1. Gestión de Ficha (.txt)")
+def evaluar_saturacion(horas: Optional[float], minimo: float) -> tuple[str, str]:
+    if horas is None:
+        return PENDIENTE, ("Captura fecha/hora de inicio de inmersión y fecha/hora de la "
+                           "primera lectura saturada (AAAA-MM-DD y HH:MM).")
+    if horas < 0:
+        return ERROR, "La primera lectura es anterior al inicio de la inmersión: revisa fechas."
+    if horas < minimo:
+        return ERROR, f"Solo {horas:.1f} h de saturación (mínimo {minimo:.0f} h). L0 aún no es confiable."
+    return OK, f"{horas:.1f} h de saturación antes de la primera lectura (mínimo {minimo:.0f} h)."
 
-if con_ancho_total(st.sidebar.button, "✨ Registrar Nuevo Sensor / Pozo Limpio"):
-    st.session_state.datos_actuales = ficha_vacia()
-    st.session_state.version += 1
-    st.rerun()
 
-archivo_subido = st.sidebar.file_uploader("Cargar Ficha de Pozo (.txt)", type=["txt"], key=f"subida_{v}")
-if archivo_subido is not None:
-    datos_cargados = importar_pozo_txt(archivo_subido.getvalue().decode("utf-8", errors="replace"))
-    if datos_cargados:
-        st.session_state.datos_actuales = normalizar_ficha(datos_cargados)
-        st.session_state.version += 1
-        st.session_state.msg_carga = f"¡Ficha '{datos_cargados.get('pozo', 'Pozo')}' cargada!"
-        st.rerun()
-if st.session_state.get("msg_carga"):
-    st.sidebar.success(st.session_state.pop("msg_carga"))
+# --------------------------------------------------------------------------
+# Pruebas
+# --------------------------------------------------------------------------
+def calcular_tabla_presion(df, cal: Calibracion, l0, t0, s_actual) -> pd.DataFrame:
+    """Agrega Presión (kPa) y Columna (mca) a una tabla de lecturas."""
+    out = df.copy().reset_index(drop=True)
+    pres = [presion_kpa(cal, r.get(COL_L), r.get(COL_T), l0, t0, s_actual)
+            for _, r in out.iterrows()]
+    out[COL_P] = [round(p, 3) if not _nan(p) else math.nan for p in pres]
+    out[COL_MCA] = [round(kpa_a_mca(p), 3) if not _nan(p) else math.nan for p in pres]
+    return out
 
-st.sidebar.divider()
-st.sidebar.header("2. Datos Generales y Parámetros")
 
-sensor_id = st.sidebar.text_input("ID / Serial del Sensor", value=d["id_sensor"], key=f"id_{v}")
-pozo_instalacion = st.sidebar.text_input("Pozo / Ubicación", value=d["pozo"], key=f"pozo_{v}")
-tipo_modelo = st.sidebar.selectbox(
-    "Modelo de Cálculo (principal)", ["Polinomial", "Lineal"],
-    index=0 if d["modelo"] == "Polinomial" else 1, key=f"modelo_{v}",
-)
+def validar_inmersion(mca_medida, mca_referencia, tol) -> tuple[str, str]:
+    mca_medida = _num(mca_medida)
+    if _nan(mca_medida):
+        return PENDIENTE, "Captura las lecturas de la prueba de inmersión."
+    dif = mca_medida - mca_referencia
+    if abs(dif) <= tol:
+        return OK, (f"Columna medida {mca_medida:.3f} m vs referencia {mca_referencia:.2f} m "
+                    f"(dif. {dif:+.3f} m, tolerancia ±{tol:.2f} m).")
+    return ERROR, (f"Columna medida {mca_medida:.3f} m vs referencia {mca_referencia:.2f} m: "
+                   f"dif. {dif:+.3f} m supera ±{tol:.2f} m. Revisa constantes, L0, burbujas o la altura real.")
 
-st.sidebar.subheader("Ubicación y Geometría")
-coord_x = st.sidebar.number_input("Coordenada X", value=float(d["x"]), format="%.2f", key=f"x_{v}")
-coord_y = st.sidebar.number_input("Coordenada Y", value=float(d["y"]), format="%.2f", key=f"y_{v}")
-cota_instalacion = st.sidebar.number_input(
-    "Cota Z del sensor (m.s.n.m.)", value=float(d["z"]), format="%.3f", key=f"z_{v}"
-)
-prof_pozo_val = st.sidebar.number_input("Prof. Pozo (m)", value=float(d["prof_pozo"]), format="%.2f", key=f"pp_{v}")
-prof_inst_val = st.sidebar.number_input(
-    "Prof. Inst. del sensor (m)", value=float(d["prof_inst"]), format="%.2f", key=f"pi_{v}"
-)
-naf_val = st.sidebar.number_input(
-    "NAF medido con sonda (m)", value=float(d["naf"]), format="%.2f", key=f"naf_{v}",
-    help="Profundidad al nivel de agua medida con sonda eléctrica antes de instalar.",
-)
 
-st.sidebar.subheader("Constantes del Fabricante (certificado)")
-st.sidebar.caption("Captura A y B (polinomial) y/o CF (lineal). Si capturas ambos modelos, la app los compara.")
-coef_a = st.sidebar.number_input("Constante A", value=float(d["a"]), format="%.4e", key=f"a_{v}")
-coef_b = st.sidebar.number_input("Constante B", value=float(d["b"]), format="%.4e", key=f"b_{v}")
-cf_factor = st.sidebar.number_input("Factor Lineal (CF)", value=float(d["cf"]), format="%.4e", key=f"cf_{v}")
-tk_factor = st.sidebar.number_input("Coef. Térmico (Tk)", value=float(d["tk"]), format="%.4e", key=f"tk_{v}")
+def analizar_columnas(columnas, mca_ref, tol, etiquetas=None) -> dict:
+    """Detalle de una prueba de inmersión: cada lectura, rango y tendencia.
 
-st.sidebar.subheader("Presión Barométrica")
-s0_baro = st.sidebar.number_input(
-    "S0 Inicial (kPa)", value=float(d["s0_baro"]), format="%.3f", key=f"s0_{v}",
-    help="Presión barométrica medida al tomar la lectura cero (L0), no el valor a nivel del mar.",
-)
-s_baro = st.sidebar.number_input("S Actual (kPa)", value=float(d["s_baro"]), format="%.3f", key=f"s_{v}")
-if abs(s0_baro - s_baro) > 3.0:
-    st.sidebar.warning(
-        "S0 y S difieren más de 3 kPa (≈0.3 m). Si no es un cambio real de clima, "
-        "revisa que ambas sean presión del sitio y no el valor estándar 101.325."
-    )
+    columnas: columna de agua (m) calculada por lectura, en orden de captura.
+    Tendencia: se avisa si >= 80 % de los pasos van en el mismo sentido y la
+    deriva total (última - primera) supera max(tol/2, 1 cm).
+    """
+    vals = [(i, _num(c)) for i, c in enumerate(columnas)]
+    vals = [(i, c) for i, c in vals if not _nan(c)]
+    etiquetas = etiquetas or [f"Lectura {i + 1}" for i in range(len(columnas))]
+    res = {"n": len(vals), "prom": math.nan, "minimo": math.nan, "maximo": math.nan,
+           "fuera": [], "tendencia": None, "deriva": math.nan}
+    if not vals:
+        return res
+    serie = [c for _, c in vals]
+    res["prom"] = sum(serie) / len(serie)
+    res["minimo"], res["maximo"] = min(serie), max(serie)
+    res["fuera"] = [etiquetas[i] for i, c in vals if abs(c - mca_ref) > tol]
+    if len(serie) >= 4:
+        pasos = [b - a for a, b in zip(serie, serie[1:])]
+        res["deriva"] = serie[-1] - serie[0]
+        subiendo = sum(1 for p in pasos if p > 0)
+        bajando = sum(1 for p in pasos if p < 0)
+        umbral = max(tol / 2, 0.01)
+        if abs(res["deriva"]) >= umbral:
+            if subiendo >= 0.8 * len(pasos):
+                res["tendencia"] = "subiendo"
+            elif bajando >= 0.8 * len(pasos):
+                res["tendencia"] = "bajando"
+    return res
 
-with st.sidebar.expander("⚙️ Criterios de aceptación"):
-    st.caption("Valores sugeridos: ajústalos a tu procedimiento o a la especificación del proyecto.")
-    crit_n_min = st.number_input(
-        "Lecturas mínimas por fase", min_value=1, max_value=50, value=int(d["crit_n_min"]), step=1, key=f"c1_{v}"
-    )
-    crit_tol_rango = st.number_input(
-        "Rango máx. entre lecturas (B). 0 = no evaluar", min_value=0.0, value=float(d["crit_tol_rango"]),
-        step=0.1, format="%.2f", key=f"c2_{v}",
-    )
-    crit_tol_fabrica = st.number_input(
-        "Tolerancia vs. lectura de fábrica (B). 0 = no evaluar", min_value=0.0,
-        value=float(d["crit_tol_fabrica"]), step=0.5, format="%.2f", key=f"c3_{v}",
-    )
-    crit_horas_sat = st.number_input(
-        "Horas mínimas de saturación", min_value=0.0, value=float(d["crit_horas_sat"]), step=1.0,
-        format="%.1f", key=f"c4_{v}",
-    )
-    crit_tol_inm = st.number_input(
-        "Tolerancia prueba de inmersión (m)", min_value=0.0, value=float(d["crit_tol_inm"]),
-        step=0.01, format="%.2f", key=f"c5_{v}",
-    )
-    crit_tol_campo = st.number_input(
-        "Tolerancia instalación vs. sonda (m)", min_value=0.0, value=float(d["crit_tol_campo"]),
-        step=0.1, format="%.2f", key=f"c6_{v}",
-    )
-    crit_umbral_salto = st.number_input(
-        "Salto entre lecturas de seguimiento (m). 0 = no alertar", min_value=0.0,
-        value=float(d["crit_umbral_salto"]), step=0.1, format="%.2f", key=f"c7_{v}",
-    )
 
-st.sidebar.subheader("📝 Observaciones / Notas de Campo")
-notas_campo = st.sidebar.text_area(
-    "Registro de novedades en pozo:", value=d["notas"], placeholder="Ej: Pozo B1-3A asolvado...",
-    height=100, key=f"notas_{v}",
-)
+def validar_inmersion_detallada(columnas, mca_ref, tol, etiquetas=None) -> tuple[str, str]:
+    """Aprueba solo si el promedio Y cada lectura están dentro de la tolerancia.
 
-cal = vc.Calibracion(tipo_modelo, a=coef_a, b=coef_b, cf=cf_factor, tk=tk_factor, s0_baro=s0_baro)
-cal_alterno = cal.alterno()
-if not cal.tiene_constantes():
-    st.warning(
-        f"⚠️ Faltan las constantes del modelo **{tipo_modelo}** (barra lateral). "
-        "Sin ellas no se calculan presiones."
-    )
+    Además avisa si las lecturas van en una sola dirección (sensor sin estabilizar).
+    """
+    det = analizar_columnas(columnas, mca_ref, tol, etiquetas)
+    if det["n"] == 0:
+        return PENDIENTE, "Captura las lecturas de la prueba de inmersión."
+    estado, msg = validar_inmersion(det["prom"], mca_ref, tol)
+    rango = f" Rango de lecturas: {det['minimo']:.3f} a {det['maximo']:.3f} m."
+    if estado == ERROR:
+        return ERROR, msg + rango
+    if det["fuera"]:
+        return ERROR, (f"El promedio cumple, pero {len(det['fuera'])} lectura(s) quedan fuera de "
+                       f"±{tol:.2f} m: {', '.join(det['fuera'])}." + rango)
+    if det["tendencia"]:
+        return AVISO, (msg + rango + f" Las lecturas van {det['tendencia']} ({det['deriva']:+.3f} m): "
+                       "puede haber burbujas o el sensor no se ha estabilizado.")
+    return OK, msg + rango
 
-# ---------------------------------------------------------------------------
-# Pestañas
-# ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "1. Fase En Seco",
-    "2. Fase Saturado (L0)",
-    "3. Fase Inmerso",
-    "4. Instalación en Campo",
-    "5. Seguimiento",
-    "6. Bitácora",
-    "7. Resumen y Verificación",
-])
 
-NOTA_TABLA = "Escribe fecha (AAAA-MM-DD) y hora (HH:MM) de cada lectura. Las filas sin lectura se ignoran."
+def analizar_calibracion_alturas(alturas_m, columnas_m, tol_consistencia: float = 0.01,
+                                 tol_pendiente: float = 0.03) -> dict:
+    """Estima la distancia fija entre el punto de medición y el diafragma.
 
-# --- TAB 1: SECO -----------------------------------------------------------
-with tab1:
-    st.header(f"a) Registro En Seco — Pozo: {pozo_instalacion}")
-    st.caption(NOTA_TABLA)
-    df_seco = editor("seco", vc.COLS_BASE)
-    res_seco = vc.resumir_tabla(df_seco)
-    prom_seco_l, prom_seco_t = res_seco["prom_l"], res_seco["prom_t"]
-
-    st.markdown("**Comparación con la lectura cero de fábrica** (certificado, 'Shipped Zero Readings')")
-    f1, f2, f3, f4 = st.columns(4)
-    with f1:
-        lectura_fabrica_seco = st.number_input(
-            "Lectura cero de fábrica (B) — 0 = no capturada", value=float(d["lectura_fabrica_seco"]),
-            format="%.1f", step=0.1, key=f"fab_{v}",
-        )
-    with f2:
-        temp_fabrica = st.number_input(
-            "Temperatura de fábrica (°C)", value=float(d["temp_fabrica"]), format="%.1f", step=0.1, key=f"tfab_{v}"
-        )
-    with f3:
-        baro_fabrica_hpa = st.number_input(
-            "Barométrica de fábrica (hPa o mbar)", value=float(d["baro_fabrica_hpa"]), format="%.1f",
-            step=0.1, key=f"bfab_{v}",
-        )
-    with f4:
-        baro_seco_hpa = st.number_input(
-            "Barométrica durante estas lecturas (hPa)", value=float(d["baro_seco_hpa"]), format="%.1f",
-            step=0.1, key=f"bseco_{v}",
-            help="Presión ACTUAL (de la estación), no la relativa a nivel del mar.",
-        )
-    esperada_seco = math.nan
-    if (lectura_fabrica_seco > 0 and temp_fabrica > 0 and baro_fabrica_hpa > 0 and baro_seco_hpa > 0
-            and cal.tiene_constantes() and not math.isnan(prom_seco_t)):
-        esperada_seco = vc.lectura_esperada_en_aire(
-            cal, lectura_fabrica_seco, temp_fabrica, baro_fabrica_hpa / 10.0, prom_seco_t, baro_seco_hpa / 10.0
-        )
-    est_seco = vc.evaluar_estabilidad(res_seco, crit_n_min, crit_tol_rango)
-    est_fab = vc.comparar_con_esperada(prom_seco_l, esperada_seco, crit_tol_fabrica)
-    if not math.isnan(esperada_seco):
-        st.caption(
-            "La lectura esperada corrige por temperatura y por presión del aire (1 kPa ≈ 10 dígitos). "
-            "Compararla directamente con la lectura de fábrica daría una diferencia engañosa."
-        )
-
-    if res_seco["n"]:
-        st.success(f"Promedio En Seco — Lectura: **{fmt(prom_seco_l)} B** | Temp: **{fmt(prom_seco_t, 2)} °C**")
-    mostrar_estado(*est_seco)
-    if est_fab[0] != vc.OMITIDO:
-        mostrar_estado(*est_fab)
-    elif not math.isnan(esperada_seco):
-        st.info(f"ℹ️ {est_fab[1]}")
-
-# --- TAB 2: SATURADO -------------------------------------------------------
-with tab2:
-    st.header(f"b) Registro Saturado (Lectura Cero L0) — Pozo: {pozo_instalacion}")
-    st.info(
-        "**Procedimiento del fabricante (RST, manual VW2100, secc. 4.3 y 5.2):** 1) quita el filtro y sumerge "
-        "el sensor en agua reposada (unas 24 h); 2) arma el filtro bajo el agua; 3) la lectura cero (L0) se toma "
-        "**al aire libre**, con el filtro saturado y colocado, **sin sumergir** el sensor; 4) espera 20–30 min de "
-        "equilibrio térmico y anota la temperatura y la presión barométrica (S0) de ese momento. "
-        "Verifícalo en tu copia del manual."
-    )
-    st.markdown("Registra cuándo sumergiste el sensor para saturarlo:")
-    c_f, c_h = st.columns(2)
-    with c_f:
-        inmersion_fecha = st.text_input(
-            "Inicio de inmersión: fecha (AAAA-MM-DD)", value=d["inmersion_fecha"], key=f"if_{v}"
-        )
-    with c_h:
-        inmersion_hora = st.text_input("Inicio de inmersión: hora (HH:MM)", value=d["inmersion_hora"], key=f"ih_{v}")
-    st.caption(NOTA_TABLA)
-    df_sat = editor("sat", vc.COLS_BASE)
-    res_sat = vc.resumir_tabla(df_sat)
-    prom_sat_l0, prom_sat_t0 = res_sat["prom_l"], res_sat["prom_t"]
-    l0_ok = not (math.isnan(prom_sat_l0) or math.isnan(prom_sat_t0))
-
-    c_constante = math.nan
-    if l0_ok and tipo_modelo == "Polinomial":
-        c_constante = vc.constante_c(coef_a, coef_b, prom_sat_l0)
-
-    if res_sat["n"]:
-        st.success(f"**L0 Oficial:** **{fmt(prom_sat_l0)} B** | **T0:** **{fmt(prom_sat_t0, 2)} °C**")
-    if not math.isnan(c_constante):
-        st.warning(f"🔧 **Constante C:** `{c_constante:.3f}` kPa")
-
-    est_sat_h = vc.evaluar_saturacion(
-        vc.horas_saturacion(vc.construir_dt(inmersion_fecha, inmersion_hora), df_sat), crit_horas_sat
-    )
-    est_sat_l0 = vc.evaluar_estabilidad(res_sat, crit_n_min, crit_tol_rango)
-    mostrar_estado(*est_sat_h)
-    mostrar_estado(*est_sat_l0)
-
-# --- TAB 3: INMERSO --------------------------------------------------------
-with tab3:
-    st.header(f"c) Registro Inmerso — Pozo: {pozo_instalacion}")
-    altura_referencia = st.slider(
-        "Altura de la columna de agua de prueba (m):",
-        min_value=0.0, max_value=1.0,
-        value=float(min(max(d["altura_referencia"], 0.0), 1.0)), step=0.05, format="%.2f m",
-        key=f"alt_{v}",
-    )
-    offset_diafragma_cm = st.number_input(
-        "Distancia del diafragma bajo tu punto de medición (cm)",
-        value=float(d["offset_diafragma_cm"]), step=0.5, format="%.1f", key=f"off_{v}",
-        help=(
-            "Mides la altura del agua desde la piedra porosa, pero el sensor mide en el diafragma. "
-            "Positivo si el diafragma queda más profundo que tu punto de medición (piedra hacia arriba); "
-            "negativo si queda más somero. Se estima en la calibración con varias alturas, más abajo."
-        ),
-    )
-    referencia_efectiva = altura_referencia + offset_diafragma_cm / 100.0
-    st.caption(NOTA_TABLA)
-    df_inm = editor("inm", vc.COLS_BASE)
-    res_inm = vc.resumir_tabla(df_inm)
-    prom_inm_l, prom_inm_t = res_inm["prom_l"], res_inm["prom_t"]
-
-    presion_inm = altura_inm = math.nan
-    est_inm_val = (vc.PENDIENTE, "Captura las lecturas de la prueba de inmersión.")
-    listo_calculo = l0_ok and cal.tiene_constantes()
-    if res_inm["n"] and listo_calculo:
-        tabla_inm = vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro)
-        tabla_inm = tabla_inm[pd.to_numeric(tabla_inm[vc.COL_L], errors="coerce").notna()].copy()
-        tabla_inm[f"¿Dentro de ±{crit_tol_inm:.2f} m?"] = [
-            "✅" if abs(c - referencia_efectiva) <= crit_tol_inm else "❌"
-            for c in tabla_inm[vc.COL_MCA]
-        ]
-        tabla_inm = con_conocida_y_variacion(tabla_inm, referencia_efectiva)
-        st.markdown("**Columna de agua: conocida vs. calculada, por cada lectura**")
-        con_ancho_total(
-            st.dataframe,
-            tabla_inm[[vc.COL_NUM, vc.COL_L, vc.COL_T, vc.COL_P, "Conocida (m)", vc.COL_MCA, "Variación (m)",
-                       f"¿Dentro de ±{crit_tol_inm:.2f} m?"]],
-            hide_index=True,
-        )
-        presion_inm = float(tabla_inm[vc.COL_P].mean())
-        altura_inm = float(tabla_inm[vc.COL_MCA].mean())
-        det_inm = vc.analizar_columnas(
-            list(tabla_inm[vc.COL_MCA]), referencia_efectiva, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
-        )
-        est_inm_val = vc.validar_inmersion_detallada(
-            list(tabla_inm[vc.COL_MCA]), referencia_efectiva, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
-        )
-    elif res_inm["n"]:
-        est_inm_val = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
-
-    st.divider()
-    if offset_diafragma_cm:
-        st.subheader(
-            f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m "
-            f"{offset_diafragma_cm:+.1f} cm = {referencia_efectiva:.3f} m)"
-        )
+    alturas_m: altura medida (m) de cada lectura, desde el punto de referencia
+    que uses (p. ej. la piedra porosa). columnas_m: columna calculada (m) para
+    cada lectura. Si el sensor mide a una distancia fija d del punto medido:
+        columna = altura + d      (d > 0 si el diafragma queda más profundo)
+    Con varias alturas: d debe salir casi igual en todas (consistencia) y la
+    pendiente columna-vs-altura debe ser ~1. Si no, el problema no es una
+    distancia fija: revisa constantes, L0, burbujas o la altura medida.
+    """
+    pares = []
+    for h, c in zip(alturas_m, columnas_m):
+        h, c = _num(h), _num(c)
+        if not _nan(h) and not _nan(c) and h > 0:
+            pares.append((h, c))
+    res = {"n": len(pares), "n_alturas": 0, "offset_m": math.nan, "por_altura": {},
+           "dispersion": math.nan, "pendiente": math.nan, "estado": PENDIENTE, "mensaje": ""}
+    if not pares:
+        res["mensaje"] = "Captura la altura medida y las lecturas de cada altura."
+        return res
+    grupos: dict = {}
+    for h, c in pares:
+        grupos.setdefault(round(h, 4), []).append(c - h)
+    por_altura = {h: sum(v) / len(v) for h, v in grupos.items()}
+    res["por_altura"] = por_altura
+    res["n_alturas"] = len(por_altura)
+    res["offset_m"] = sum(por_altura.values()) / len(por_altura)
+    if len(por_altura) < 2:
+        res["mensaje"] = ("Con una sola altura no se puede separar una distancia fija de un error de "
+                          "constantes o de L0. Prueba al menos 2 alturas distintas.")
+        return res
+    res["dispersion"] = max(por_altura.values()) - min(por_altura.values())
+    hm = sum(h for h, _ in pares) / len(pares)
+    cm = sum(c for _, c in pares) / len(pares)
+    sxx = sum((h - hm) ** 2 for h, _ in pares)
+    res["pendiente"] = sum((h - hm) * (c - cm) for h, c in pares) / sxx if sxx > 0 else math.nan
+    avisos = []
+    if res["dispersion"] > tol_consistencia:
+        avisos.append(f"la diferencia cambia {res['dispersion'] * 100:.1f} cm entre alturas "
+                      f"(máx. {tol_consistencia * 100:.1f} cm)")
+    if not _nan(res["pendiente"]) and abs(res["pendiente"] - 1) > tol_pendiente:
+        avisos.append(f"la pendiente columna/altura es {res['pendiente']:.3f} (debería ser ≈1)")
+    if avisos:
+        res["estado"] = AVISO
+        res["mensaje"] = ("No parece una distancia fija: " + "; ".join(avisos) +
+                          ". Revisa constantes, L0, burbujas o la altura medida.")
     else:
-        st.subheader(f"🎯 Validación de la Prueba (Referencia: {altura_referencia:.2f} m)")
-    col_v1, col_v2 = st.columns(2)
-    with col_v1:
-        st.metric("Promedio Presión / Columna", f"{fmt(altura_inm)} mca", delta=f"{fmt(presion_inm, 2)} kPa")
-        if res_inm["n"] and not math.isnan(altura_inm):
-            st.caption(f"Mínimo – máximo de las lecturas: {det_inm['minimo']:.3f} – {det_inm['maximo']:.3f} mca")
-    with col_v2:
-        est_inm_estab = vc.evaluar_estabilidad(res_inm, crit_n_min, crit_tol_rango)
-        mostrar_estado(*est_inm_val)
-        if est_inm_estab[0] in (vc.ERROR, vc.AVISO):
-            mostrar_estado(*est_inm_estab)
-    est_inm = peor(est_inm_val, est_inm_estab)
+        res["estado"] = OK
+        res["mensaje"] = (f"Distancia estimada: {res['offset_m'] * 100:+.1f} cm, consistente en "
+                          f"{len(por_altura)} alturas.")
+    return res
 
-    if cal_alterno is not None and res_inm["n"] and listo_calculo:
-        t_alt = vc.calcular_tabla_presion(df_inm, cal_alterno, prom_sat_l0, prom_sat_t0, s_baro)
-        mca_alt = float(t_alt[vc.COL_MCA].mean())
-        st.caption(
-            f"Contraste con el modelo {cal_alterno.modelo}: {fmt(mca_alt)} mca "
-            f"(diferencia con el principal: {mca_alt - altura_inm:+.3f} m)."
-        )
-    if not math.isnan(prom_inm_l) and not math.isnan(prom_sat_l0) and prom_inm_l >= prom_sat_l0:
-        st.warning("⚠️ La lectura inmersa es mayor o igual que L0; con una columna de agua extra debería ser menor.")
 
-    st.divider()
-    st.subheader("🔬 Calibración de la distancia piedra–diafragma (varias alturas)")
-    st.caption(
-        "Repite la prueba a 2 o 3 alturas (p. ej. 20, 30 y 50 cm). Escribe en cada fila la altura medida y la "
-        "lectura (puedes repetir la altura en varias filas). Si el sensor mide a una distancia fija del punto "
-        "donde mides, la diferencia sale casi igual en todas las alturas: ese es el valor para el campo de arriba."
-    )
-    df_alt = editor("alt", vc.COLS_ALTURAS)
-    det_alt = None
-    if vc.serie_numerica(df_alt, vc.COL_L).notna().any():
-        if listo_calculo:
-            tabla_alt = vc.calcular_tabla_presion(df_alt, cal, prom_sat_l0, prom_sat_t0, s_baro)
-            det_alt = vc.analizar_calibracion_alturas(
-                [h / 100.0 for h in vc.serie_numerica(tabla_alt, vc.COL_ALT)], list(tabla_alt[vc.COL_MCA]),
-            )
-            if det_alt["por_altura"]:
-                filas = pd.DataFrame({
-                    "Altura (cm)": [round(h * 100, 1) for h in det_alt["por_altura"]],
-                    "Columna − altura (cm)": [round(x * 100, 2) for x in det_alt["por_altura"].values()],
-                })
-                con_ancho_total(st.dataframe, filas, hide_index=True)
-            mostrar_estado(det_alt["estado"], det_alt["mensaje"])
-            if det_alt["estado"] == vc.OK:
-                st.info(
-                    f"👉 Escribe **{det_alt['offset_m'] * 100:.1f}** en 'Distancia del diafragma bajo tu punto "
-                    "de medición (cm)' y, desde entonces, la prueba usará esa corrección."
-                )
-        else:
-            st.info("⏳ Falta la lectura cero (L0 y T0) o las constantes del modelo.")
+def columna_teorica(prof_inst, naf) -> float:
+    """Columna de agua esperada sobre el sensor según sonda manual (m)."""
+    return max(0.0, float(prof_inst) - float(naf))
 
-# --- TAB 4: INSTALACIÓN EN CAMPO ------------------------------------------
-with tab4:
-    st.header(f"d) Monitoreo e Instalación Real en Campo — Pozo: {pozo_instalacion}")
-    st.subheader("1. Parámetros Geométricos (de la barra lateral)")
-    g1, g2, g3 = st.columns(3)
-    g1.metric("Profundidad de instalación", f"{prof_inst_val:.2f} m")
-    g2.metric("Cota Z del sensor", f"{cota_instalacion:.3f} m.s.n.m.")
-    g3.metric("NAF con sonda", f"{naf_val:.2f} m")
-    if prof_inst_val > 0 and naf_val >= prof_inst_val:
-        st.warning(
-            "⚠️ El NAF medido es igual o mayor que la profundidad del sensor: el sensor quedaría sobre "
-            "el nivel de agua (columna esperada 0)."
-        )
 
-    st.divider()
-    st.subheader("2. Lectura In Situ del Sensor de Cuerda Vibrante")
-    cl1, cl2 = st.columns(2)
-    with cl1:
-        l_campo = st.number_input(
-            "Lectura en campo (B units) — 0 = no capturada", value=float(d["l_campo"]), step=0.1,
-            format="%.3f", key=f"lc_{v}",
-        )
-    with cl2:
-        t_campo = st.number_input(
-            "Temperatura en campo (°C)", value=float(d["t_campo"]), step=0.1, format="%.2f", key=f"tc_{v}"
-        )
+def validar_campo(mca_calc, mca_teorica, tol) -> tuple[str, str]:
+    mca_calc = _num(mca_calc)
+    if _nan(mca_calc):
+        return PENDIENTE, "Captura la lectura y temperatura de campo."
+    dif = mca_calc - mca_teorica
+    if abs(dif) <= tol:
+        return OK, f"Diferencia {dif:+.3f} m respecto al nivel con sonda (tolerancia ±{tol:.2f} m)."
+    return ERROR, (f"Diferencia {dif:+.3f} m respecto al nivel con sonda supera ±{tol:.2f} m. "
+                   "Verifica recarga reciente, la cota Z, el NAF medido o las constantes.")
 
-    mca_teorico = vc.columna_teorica(prof_inst_val, naf_val)
-    elev_teorica = cota_instalacion + mca_teorico
-    campo_capturado = l_campo > 0
-    p_campo = mca_campo = elev_campo = prof_agua_campo = math.nan
-    if campo_capturado and l0_ok and cal.tiene_constantes():
-        p_campo = vc.presion_kpa(cal, l_campo, t_campo, prom_sat_l0, prom_sat_t0, s_baro)
-        mca_campo = vc.kpa_a_mca(p_campo)
-        elev_campo = cota_instalacion + mca_campo
-        prof_agua_campo = prof_inst_val - mca_campo
 
-    st.divider()
-    st.subheader("3. Comparativa y Resultados de Validación")
-    m1, m2 = st.columns(2)
-    m1.metric("Nivel Teórico (Sonda Manual)", f"{elev_teorica:.3f} m.s.n.m.", delta=f"Columna: {mca_teorico:.2f} m")
-    m2.metric(
-        f"Cálculo Fórmula {tipo_modelo}", f"{fmt(elev_campo)} m.s.n.m.", delta=f"Presión: {fmt(p_campo, 2)} kPa"
-    )
-    if not math.isnan(prof_agua_campo):
-        st.caption(f"Profundidad al agua calculada desde superficie: **{prof_agua_campo:.2f} m**.")
-    if cal_alterno is not None and not math.isnan(p_campo):
-        p_alt = vc.presion_kpa(cal_alterno, l_campo, t_campo, prom_sat_l0, prom_sat_t0, s_baro)
-        st.caption(
-            f"Contraste con el modelo {cal_alterno.modelo}: "
-            f"{cota_instalacion + vc.kpa_a_mca(p_alt):.3f} m.s.n.m. (Presión: {p_alt:.2f} kPa)."
-        )
+# --------------------------------------------------------------------------
+# Seguimiento posterior a la instalación
+# --------------------------------------------------------------------------
+def calcular_seguimiento(df, cal: Calibracion, l0, t0, cota, prof_inst, s_ficha,
+                         umbral_salto: float = 0.0) -> pd.DataFrame:
+    """Nivel de agua por lectura, con salto respecto a la lectura previa."""
+    nuevas = [COL_P, COL_MCA, COL_NIVEL, COL_PROF, COL_DELTA, COL_ALERTA, "_dt"]
+    if df is None or len(df) == 0:
+        return pd.DataFrame(columns=list(COLS_SEGUIMIENTO) + nuevas)
+    out = df.copy().reset_index(drop=True)
+    n = len(out)
+    pres, mca, nivel, prof, dts = [], [], [], [], []
+    for _, r in out.iterrows():
+        baro = _num(r.get(COL_BARO))
+        if _nan(baro):
+            baro = s_ficha
+        p = presion_kpa(cal, r.get(COL_L), r.get(COL_T), l0, t0, baro)
+        m = kpa_a_mca(p)
+        pres.append(p)
+        mca.append(m)
+        nivel.append(cota + m if not _nan(m) else math.nan)
+        prof.append(prof_inst - m if not _nan(m) else math.nan)
+        dts.append(construir_dt(r.get(COL_FECHA), r.get(COL_HORA)))
 
-    st.markdown("### 📋 Diagnóstico de Verificación in Situ")
-    if not campo_capturado:
-        est_campo = (vc.PENDIENTE, "Captura la lectura de campo del sensor.")
-    elif not (l0_ok and cal.tiene_constantes()):
-        est_campo = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
-    else:
-        est_campo = vc.validar_campo(mca_campo, mca_teorico, crit_tol_campo)
-    mostrar_estado(*est_campo)
+    validos = [i for i in range(n) if not _nan(nivel[i])]
+    if validos and all(dts[i] is not None for i in validos):
+        validos.sort(key=lambda i: dts[i])
+    delta = [math.nan] * n
+    alerta = [""] * n
+    for ant, act in zip(validos, validos[1:]):
+        d = nivel[act] - nivel[ant]
+        delta[act] = d
+        if umbral_salto > 0 and abs(d) > umbral_salto:
+            alerta[act] = f"⚠️ salto {d:+.2f} m"
 
-# --- TAB 5: SEGUIMIENTO ----------------------------------------------------
-with tab5:
-    st.header(f"e) Seguimiento posterior a la instalación — Pozo: {pozo_instalacion}")
-    st.caption(
-        "Agrega una fila por visita o descarga de datos. Con 'Baro (kPa)' vacío se usa la S actual de la ficha. "
-        "Usa el botón + de la tabla para añadir filas."
-    )
-    df_seg = editor("seg", vc.COLS_SEGUIMIENTO, dinamico=True)
-    tabla_seg = pd.DataFrame()
-    est_seg = (vc.OMITIDO, "Aún no hay lecturas de seguimiento.")
-    if vc.serie_numerica(df_seg, vc.COL_L).notna().any():
-        if l0_ok and cal.tiene_constantes():
-            tabla_seg = vc.calcular_seguimiento(
-                df_seg, cal, prom_sat_l0, prom_sat_t0, cota_instalacion, prof_inst_val, s_baro, crit_umbral_salto
-            )
-            mostrar_cols = [c for c in tabla_seg.columns if c != "_dt"]
-            st.markdown("**Nivel de agua calculado**")
-            con_ancho_total(st.dataframe, tabla_seg[mostrar_cols], hide_index=True)
-            n_alertas = int((tabla_seg[vc.COL_ALERTA] != "").sum())
-            serie = tabla_seg.dropna(subset=["_dt", vc.COL_NIVEL]).sort_values("_dt")
-            if len(serie) >= 2:
-                st.line_chart(serie.set_index("_dt")[vc.COL_NIVEL])
-            elif tabla_seg[vc.COL_NIVEL].notna().sum() >= 1:
-                st.caption("Para ver la gráfica se necesitan al menos 2 lecturas con fecha y hora válidas.")
-            n_validas = int(tabla_seg[vc.COL_NIVEL].notna().sum())
-            est_seg = (
-                (vc.AVISO, f"{n_alertas} salto(s) mayores a {crit_umbral_salto:.2f} m entre lecturas.")
-                if n_alertas else (vc.OK, f"{n_validas} lectura(s) de seguimiento sin saltos bruscos.")
-            )
-        else:
-            est_seg = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
-        mostrar_estado(*est_seg)
+    def r3(v):
+        return round(v, 3) if not _nan(v) else math.nan
 
-# --- TAB 6: BITÁCORA -------------------------------------------------------
-with tab6:
-    st.header(f"g) Bitácora del sensor — Pozo: {pozo_instalacion} | Sensor: {sensor_id}")
-    st.caption(
-        "Registra cada actividad (saturación, L0, instalación, cambios en el CR6, verificaciones). "
-        "La bitácora se guarda **dentro de la ficha .txt**: después de agregar entradas, "
-        "descarga el archivo desde la barra lateral. Si recargas la página sin descargar, se pierden."
-    )
-    clave_bit = f"bitacora_{v}"
-    if clave_bit not in st.session_state:
-        st.session_state[clave_bit] = limpiar_bitacora(d.get("bitacora"))
-    bitacora = st.session_state[clave_bit]
+    out[COL_P] = [r3(v) for v in pres]
+    out[COL_MCA] = [r3(v) for v in mca]
+    out[COL_NIVEL] = [r3(v) for v in nivel]
+    out[COL_PROF] = [r3(v) for v in prof]
+    out[COL_DELTA] = [r3(v) for v in delta]
+    out[COL_ALERTA] = alerta
+    out["_dt"] = pd.to_datetime(pd.Series(dts, dtype="object"), errors="coerce")
+    return out
 
-    with st.form(f"form_bitacora_{v}", clear_on_submit=True):
-        bf1, bf2, bf3 = st.columns(3)
-        with bf1:
-            bit_fecha = st.text_input("Bitácora: fecha (AAAA-MM-DD, vacío = hoy)", value="")
-        with bf2:
-            bit_hora = st.text_input("Bitácora: hora (HH:MM, vacío = ahora)", value="")
-        with bf3:
-            bit_resp = st.text_input("Bitácora: responsable", value="")
-        bit_act = st.selectbox("Bitácora: actividad", ACTIVIDADES)
-        bit_detalle = st.text_area(
-            "Bitácora: detalle", value="", height=90,
-            placeholder="Ej: Constantes A, B, Tk capturadas del certificado; respaldo guardado como ...",
-        )
-        agregar = st.form_submit_button("➕ Agregar a la bitácora")
-    if agregar:
-        if not bit_resp.strip():
-            st.warning("Escribe quién realizó la actividad.")
-        else:
-            ahora = ahora_local()
-            bitacora.append({
-                "Fecha": bit_fecha.strip() or ahora.strftime("%Y-%m-%d"),
-                "Hora": bit_hora.strip() or ahora.strftime("%H:%M"),
-                "Responsable": bit_resp.strip(),
-                "Actividad": bit_act,
-                "Detalle": bit_detalle.strip(),
-            })
-            st.success("Entrada agregada. Descarga la ficha para guardarla.")
 
-    if bitacora:
-        con_ancho_total(st.dataframe, pd.DataFrame(bitacora, columns=COLS_BITACORA), hide_index=True)
-        if st.button("🗑️ Eliminar la última entrada", key=f"del_bit_{v}"):
-            bitacora.pop()
-            st.rerun()
-    else:
-        st.info("Aún no hay entradas en la bitácora.")
+# --------------------------------------------------------------------------
+# Exportación
+# --------------------------------------------------------------------------
+def limpiar_para_json(obj):
+    """NaN -> None y tipos numpy -> tipos nativos, para guardar JSON válido."""
+    if isinstance(obj, dict):
+        return {str(k): limpiar_para_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [limpiar_para_json(v) for v in obj]
+    if hasattr(obj, "item") and not isinstance(obj, (str, bytes)):
+        try:
+            obj = obj.item()
+        except (ValueError, AttributeError):
+            pass
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, (datetime, pd.Timestamp)):
+        return obj.isoformat()
+    return obj
 
-_acts = {e["Actividad"] for e in bitacora}
-_faltan_bit = [a for a in ("Programa CR6 actualizado", "Verificación con geólogo") if a not in _acts]
-if not bitacora:
-    est_bit = (vc.OMITIDO, "Sin entradas en la bitácora.")
-elif _faltan_bit:
-    est_bit = (vc.OMITIDO, "Falta registrar: " + ", ".join(_faltan_bit) + ".")
-else:
-    est_bit = (vc.OK, f"{len(bitacora)} entrada(s), con actualización del CR6 y verificación con geólogo.")
 
-# ---------------------------------------------------------------------------
-# Verificación global
-# ---------------------------------------------------------------------------
-if not (sensor_id.strip() and pozo_instalacion.strip() and cal.tiene_constantes()):
-    faltan = [
-        t for t, ok in (
-            ("ID del sensor", bool(sensor_id.strip())),
-            ("nombre del pozo", bool(pozo_instalacion.strip())),
-            (f"constantes del modelo {tipo_modelo}", cal.tiene_constantes()),
-        ) if not ok
-    ]
-    est_datos = (vc.PENDIENTE, "Falta: " + ", ".join(faltan) + ".")
-else:
-    est_datos = (vc.OK, "ID, pozo y constantes capturados.")
-
-checklist = [
-    ("Datos del sensor y constantes", *est_datos),
-    ("Lecturas en seco estables", *est_seco),
-    ("Seco vs. lectura de fábrica, corregida (opcional)", *est_fab),
-    (f"Saturación ≥ {crit_horas_sat:.0f} h", *est_sat_h),
-    ("Lectura cero (L0) estable", *est_sat_l0),
-    ("Prueba de inmersión", *est_inm),
-    ("Instalación validada con sonda", *est_campo),
-    ("Seguimiento post-instalación (opcional)", *est_seg),
-    ("Bitácora: CR6 y verificación con geólogo (opcional)", *est_bit),
-]
-estados = [e for _, e, _ in checklist]
-n_err, n_pend = estados.count(vc.ERROR), estados.count(vc.PENDIENTE)
-if n_err:
-    estado_global = (vc.ERROR, f"{n_err} punto(s) a corregir y {n_pend} pendiente(s).")
-elif n_pend:
-    estado_global = (vc.PENDIENTE, f"En proceso: faltan {n_pend} punto(s) por completar.")
-elif vc.AVISO in estados:
-    estado_global = (vc.AVISO, "Validado, con avisos por revisar.")
-else:
-    estado_global = (vc.OK, "Todo el protocolo está validado.")
-with banner.container():
-    mostrar_estado(*estado_global)
-
-# ---------------------------------------------------------------------------
-# Empaquetado para guardar
-# ---------------------------------------------------------------------------
-datos_guardar = {
-    "version_ficha": 2,
-    "guardado": datetime.now().strftime("%Y-%m-%d %H:%M"),
-    "id_sensor": sensor_id,
-    "pozo": pozo_instalacion,
-    "modelo": tipo_modelo,
-    "x": coord_x, "y": coord_y, "z": cota_instalacion,
-    "prof_pozo": prof_pozo_val, "prof_inst": prof_inst_val, "naf": naf_val,
-    "a": coef_a, "b": coef_b, "cf": cf_factor, "tk": tk_factor,
-    "s0_baro": s0_baro, "s_baro": s_baro,
-    "notas": notas_campo,
-    "lectura_fabrica_seco": lectura_fabrica_seco, "temp_fabrica": temp_fabrica,
-    "baro_fabrica_hpa": baro_fabrica_hpa, "baro_seco_hpa": baro_seco_hpa,
-    "inmersion_fecha": inmersion_fecha, "inmersion_hora": inmersion_hora,
-    "altura_referencia": altura_referencia,
-    "offset_diafragma_cm": offset_diafragma_cm,
-    "l_campo": l_campo, "t_campo": t_campo,
-    "crit_n_min": crit_n_min, "crit_tol_rango": crit_tol_rango, "crit_tol_fabrica": crit_tol_fabrica,
-    "crit_horas_sat": crit_horas_sat, "crit_tol_inm": crit_tol_inm, "crit_tol_campo": crit_tol_campo,
-    "crit_umbral_salto": crit_umbral_salto,
-    "tabla_seco": df_seco.to_dict(orient="records"),
-    "tabla_sat": df_sat.to_dict(orient="records"),
-    "tabla_inm": df_inm.to_dict(orient="records"),
-    "tabla_seg": df_seg.to_dict(orient="records"),
-    "tabla_alt": df_alt.to_dict(orient="records"),
-    "bitacora": list(bitacora),
-    # Resultados calculados (referencia; al cargar se recalculan)
-    "prom_seco_l": prom_seco_l, "prom_seco_t": prom_seco_t,
-    "prom_sat_l0": prom_sat_l0, "prom_sat_t0": prom_sat_t0,
-    "c_constante": c_constante,
-    "prom_inm_l": prom_inm_l, "prom_inm_t": prom_inm_t,
-    "presion_kPa": presion_inm, "altura_mca": altura_inm,
-    "elevacion_nivel_campo_msnm": elev_campo,
-    "prof_agua_campo_m": prof_agua_campo,
-    "checklist": [{"item": n, "estado": e, "detalle": t} for n, e, t in checklist],
-    "estado_global": estado_global[0],
-}
-
-st.sidebar.divider()
-st.sidebar.subheader("💾 Guardar Avances del Pozo")
-nombre_base = nombre_archivo(pozo_instalacion)
-con_ancho_total(
-    st.sidebar.download_button,
-    label=f"💾 Descargar / Guardar ({nombre_base}.txt)",
-    data=exportar_pozo_txt(datos_guardar),
-    file_name=f"{nombre_base}.txt",
-    mime="text/plain",
-)
-
-# --- TAB 7: RESUMEN --------------------------------------------------------
-with tab7:
-    st.header(f"📋 Resumen Ejecutivo — Pozo: {pozo_instalacion} | Sensor: {sensor_id}")
-
-    st.subheader("✔️ Lista de verificación")
-    for nombre, estado, detalle in checklist:
-        st.markdown(f"{ICONOS[estado]} **{nombre}** — {detalle}")
-
-    st.divider()
-    s1, s2, s3 = st.columns(3)
-    with s1:
-        st.subheader("📍 Geometría y Sitio")
-        st.write(f"**Coordenada X:** {coord_x:.2f}")
-        st.write(f"**Coordenada Y:** {coord_y:.2f}")
-        st.write(f"**Cota Z del sensor:** {cota_instalacion:.3f} m.s.n.m.")
-        st.write(f"**Profundidad Pozo:** {prof_pozo_val:.2f} m")
-        st.write(f"**Profundidad Inst.:** {prof_inst_val:.2f} m")
-        st.write(f"**NAF (sonda):** {naf_val:.2f} m")
-    with s2:
-        st.subheader("⚙️ Metrología")
-        st.write(f"**Lectura en seco:** {fmt(prom_seco_l)} B")
-        st.write(f"**Lectura Cero ($L_0$):** {fmt(prom_sat_l0)} B")
-        st.write(f"**Temp Cero ($T_0$):** {fmt(prom_sat_t0, 2)} °C")
-        if not math.isnan(c_constante):
-            st.write(f"**Constante C:** {c_constante:.3f} kPa")
-        st.write(f"**Coef. Térmico ($Tk$):** {tk_factor:.4e}")
-    with s3:
-        st.subheader("📊 Resultados")
-        st.write(f"**Prueba inmersión:** {fmt(altura_inm)} mca (ref. {referencia_efectiva:.3f} m)")
-        st.write(f"**Lectura de campo:** {fmt(l_campo if campo_capturado else math.nan)} B")
-        st.write(f"**Nivel de agua en campo:** {fmt(elev_campo)} m.s.n.m.")
-        st.write(f"**Prof. al agua:** {fmt(prof_agua_campo, 2)} m")
-
-    st.divider()
-    st.subheader("📌 Observaciones / Novedades de Campo Registradas")
-    if notas_campo.strip():
-        st.info(f"✍️ **Nota:** {notas_campo}")
-    else:
-        st.caption("No se han registrado observaciones adicionales para este pozo.")
-
-    st.divider()
-    resumen_df = pd.DataFrame(
-        [(k, v_) for k, v_ in vc.limpiar_para_json(datos_guardar).items()
-         if not k.startswith("tabla_") and k not in ("checklist", "bitacora")],
-        columns=["Campo", "Valor"],
-    )
-    resumen_df["Valor"] = resumen_df["Valor"].astype(str)
-    checklist_df = pd.DataFrame(checklist, columns=["Verificación", "Estado", "Detalle"])
-    if HAY_EXCEL:
-        hojas = {
-            "Resumen": resumen_df,
-            "Verificacion": checklist_df,
-            "Seco": df_seco,
-            "Saturado": df_sat,
-            "Inmerso": (con_conocida_y_variacion(
-                            vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro),
-                            referencia_efectiva)
-                        if listo_calculo else df_inm),
-            "Seguimiento": (tabla_seg.drop(columns=["_dt"]) if not tabla_seg.empty else df_seg),
-            "Bitacora": pd.DataFrame(bitacora, columns=COLS_BITACORA),
-        }
-        con_ancho_total(
-            st.download_button,
-            label="📥 Descargar Reporte en Excel",
-            data=vc.construir_excel(hojas),
-            file_name=f"reporte_{nombre_base}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-    else:
-        st.download_button(
-            label="📥 Descargar Resumen en CSV",
-            data=resumen_df.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"reporte_{nombre_base}.csv",
-            mime="text/csv",
-        )
-        st.caption("Para exportar a Excel agrega `openpyxl` a requirements.txt.")
+def construir_excel(hojas: dict) -> bytes:
+    """Excel con una hoja por DataFrame. Requiere openpyxl."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for nombre, df in hojas.items():
+            df.to_excel(writer, sheet_name=nombre[:31], index=False)
+            ws = writer.sheets[nombre[:31]]
+            for col in ws.columns:
+                ancho = max(len(str(c.value)) if c.value is not None else 0 for c in col)
+                ws.column_dimensions[col[0].column_letter].width = min(max(ancho + 2, 10), 60)
+    return buffer.getvalue()
