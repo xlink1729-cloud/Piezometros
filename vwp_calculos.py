@@ -348,8 +348,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "3. Fase Inmerso",
     "4. Instalación en Campo",
     "5. Seguimiento",
-    "6. Resumen y Verificación",
-    "7. Bitácora",
+    "6. Bitácora",
+    "7. Resumen y Verificación",
 ])
 
 NOTA_TABLA = "Escribe fecha (AAAA-MM-DD) y hora (HH:MM) de cada lectura. Las filas sin lectura se ignoran."
@@ -654,8 +654,8 @@ with tab5:
             est_seg = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
         mostrar_estado(*est_seg)
 
-# --- TAB 7: BITÁCORA -------------------------------------------------------
-with tab7:
+# --- TAB 6: BITÁCORA -------------------------------------------------------
+with tab6:
     st.header(f"g) Bitácora del sensor — Pozo: {pozo_instalacion} | Sensor: {sensor_id}")
     st.caption(
         "Registra cada actividad (saturación, L0, instalación, cambios en el CR6, verificaciones). "
@@ -803,8 +803,8 @@ con_ancho_total(
     mime="text/plain",
 )
 
-# --- TAB 6: RESUMEN --------------------------------------------------------
-with tab6:
+# --- TAB 7: RESUMEN --------------------------------------------------------
+with tab7:
     st.header(f"📋 Resumen Ejecutivo — Pozo: {pozo_instalacion} | Sensor: {sensor_id}")
 
     st.subheader("✔️ Lista de verificación")
