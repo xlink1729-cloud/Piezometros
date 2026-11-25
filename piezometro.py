@@ -68,6 +68,14 @@ def peor(*pares):
     return max(pares, key=lambda p: RANGO[p[0]])
 
 
+def con_conocida_y_variacion(tabla, referencia):
+    """Agrega 'Conocida (m)' y 'Variación (m)' (calculada - conocida), como en el reporte."""
+    t = tabla.copy()
+    t["Conocida (m)"] = round(referencia, 3)
+    t["Variación (m)"] = (pd.to_numeric(t[vc.COL_MCA], errors="coerce") - referencia).round(3)
+    return t
+
+
 def nombre_archivo(pozo):
     limpio = re.sub(r"[^\w\-.]+", "_", (pozo or "").strip()).strip("_")
     return limpio or "pozo_sin_nombre"
@@ -361,11 +369,6 @@ with tab2:
     est_sat_l0 = vc.evaluar_estabilidad(res_sat, crit_n_min, crit_tol_rango)
     mostrar_estado(*est_sat_h)
     mostrar_estado(*est_sat_l0)
-    if not math.isnan(prom_seco_l) and not math.isnan(prom_sat_l0) and prom_sat_l0 >= prom_seco_l:
-        st.warning(
-            "⚠️ L0 saturada es mayor o igual que la lectura en seco. Normalmente la lectura baja al saturar: "
-            "revisa que no se hayan capturado al revés o con el sensor aún seco."
-        )
 
 # --- TAB 3: INMERSO --------------------------------------------------------
 with tab3:
@@ -401,10 +404,12 @@ with tab3:
             "✅" if abs(c - referencia_efectiva) <= crit_tol_inm else "❌"
             for c in tabla_inm[vc.COL_MCA]
         ]
-        st.markdown("**Presión y columna calculadas por cada lectura**")
+        tabla_inm = con_conocida_y_variacion(tabla_inm, referencia_efectiva)
+        st.markdown("**Columna de agua: conocida vs. calculada, por cada lectura**")
         con_ancho_total(
             st.dataframe,
-            tabla_inm[[vc.COL_NUM, vc.COL_L, vc.COL_T, vc.COL_P, vc.COL_MCA, f"¿Dentro de ±{crit_tol_inm:.2f} m?"]],
+            tabla_inm[[vc.COL_NUM, vc.COL_L, vc.COL_T, vc.COL_P, "Conocida (m)", vc.COL_MCA, "Variación (m)",
+                       f"¿Dentro de ±{crit_tol_inm:.2f} m?"]],
             hide_index=True,
         )
         presion_inm = float(tabla_inm[vc.COL_P].mean())
@@ -715,7 +720,9 @@ with tab6:
             "Verificacion": checklist_df,
             "Seco": df_seco,
             "Saturado": df_sat,
-            "Inmerso": (vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro)
+            "Inmerso": (con_conocida_y_variacion(
+                            vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro),
+                            referencia_efectiva)
                         if listo_calculo else df_inm),
             "Seguimiento": (tabla_seg.drop(columns=["_dt"]) if not tabla_seg.empty else df_seg),
         }
