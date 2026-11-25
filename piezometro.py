@@ -36,7 +36,7 @@ st.set_page_config(
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
 st.markdown("Herramienta de campo con registro progresivo en archivo `.txt` por pozo.")
-VERSION_APP = "2026-11-25 · con bitácora (7 pestañas)"
+VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · rev. 2"
 st.caption(f"Versión de la app: {VERSION_APP}")
 banner = st.empty()  # se llena al final con el estado global
 
@@ -196,6 +196,9 @@ if "datos_actuales" not in st.session_state:
 if "version" not in st.session_state:
     st.session_state.version = 0
 
+# Completa la ficha de la sesión con los campos nuevos (por ejemplo, si la página
+# quedó abierta con una versión anterior de la app).
+st.session_state.datos_actuales = normalizar_ficha(st.session_state.datos_actuales)
 d = st.session_state.datos_actuales
 v = st.session_state.version  # cambia al cargar/crear una ficha: reinicia los widgets
 
