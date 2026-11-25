@@ -36,6 +36,8 @@ st.set_page_config(
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
 st.markdown("Herramienta de campo con registro progresivo en archivo `.txt` por pozo.")
+VERSION_APP = "2026-11-25 · con bitácora (7 pestañas)"
+st.caption(f"Versión de la app: {VERSION_APP}")
 banner = st.empty()  # se llena al final con el estado global
 
 # ---------------------------------------------------------------------------
@@ -76,6 +78,41 @@ def con_conocida_y_variacion(tabla, referencia):
     return t
 
 
+ACTIVIDADES = [
+    "Recepción / verificación en seco",
+    "Saturación iniciada",
+    "Lectura cero (L0)",
+    "Prueba de inmersión",
+    "Instalación en pozo",
+    "Programa CR6 actualizado",
+    "Respaldo del CR6",
+    "GeoViewer actualizado",
+    "Verificación con geólogo",
+    "Lectura de seguimiento",
+    "Observación / incidencia",
+]
+COLS_BITACORA = ["Fecha", "Hora", "Responsable", "Actividad", "Detalle"]
+
+
+def ahora_local():
+    """Fecha y hora de México (el servidor puede estar en UTC)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("America/Mexico_City"))
+    except Exception:
+        return datetime.now()
+
+
+def limpiar_bitacora(entradas):
+    """Solo entradas válidas, con las columnas esperadas y en texto."""
+    limpias = []
+    for e in entradas or []:
+        if isinstance(e, dict):
+            limpias.append({c: str(e.get(c) or "") for c in COLS_BITACORA})
+    return limpias
+
+
 def nombre_archivo(pozo):
     limpio = re.sub(r"[^\w\-.]+", "_", (pozo or "").strip()).strip("_")
     return limpio or "pozo_sin_nombre"
@@ -96,7 +133,8 @@ def ficha_vacia():
         "a": 0.0, "b": 0.0, "cf": 0.0, "tk": 0.0,
         "s0_baro": 101.325, "s_baro": 101.325,
         "notas": "",
-        "lectura_fabrica_seco": 0.0,
+        "lectura_fabrica_seco": 0.0, "temp_fabrica": 0.0,
+        "baro_fabrica_hpa": 0.0, "baro_seco_hpa": 0.0,
         "inmersion_fecha": "", "inmersion_hora": "",
         "altura_referencia": 0.30,
         "offset_diafragma_cm": 0.0,
@@ -105,13 +143,14 @@ def ficha_vacia():
         "crit_n_min": 5, "crit_tol_rango": 1.0, "crit_tol_fabrica": 0.0,
         "crit_horas_sat": 24.0, "crit_tol_inm": 0.05, "crit_tol_campo": 1.0,
         "crit_umbral_salto": 0.5,
-        "tabla_seco": None, "tabla_sat": None, "tabla_inm": None, "tabla_seg": None, "tabla_alt": None,
+        "tabla_seco": None, "tabla_sat": None, "tabla_inm": None, "tabla_seg": None, "tabla_alt": None, "bitacora": None,
     }
 
 
 CLAVES_NUM = [
     "x", "y", "z", "prof_pozo", "prof_inst", "naf", "a", "b", "cf", "tk",
-    "s0_baro", "s_baro", "lectura_fabrica_seco", "altura_referencia", "offset_diafragma_cm",
+    "s0_baro", "s_baro", "lectura_fabrica_seco", "temp_fabrica", "baro_fabrica_hpa", "baro_seco_hpa",
+    "altura_referencia", "offset_diafragma_cm",
     "l_campo", "t_campo", "crit_n_min", "crit_tol_rango", "crit_tol_fabrica",
     "crit_horas_sat", "crit_tol_inm", "crit_tol_campo", "crit_umbral_salto",
 ]
@@ -305,13 +344,14 @@ if not cal.tiene_constantes():
 # ---------------------------------------------------------------------------
 # Pestañas
 # ---------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "1. Fase En Seco",
     "2. Fase Saturado (L0)",
     "3. Fase Inmerso",
     "4. Instalación en Campo",
     "5. Seguimiento",
-    "6. Resumen y Verificación",
+    "6. Bitácora",
+    "7. Resumen y Verificación",
 ])
 
 NOTA_TABLA = "Escribe fecha (AAAA-MM-DD) y hora (HH:MM) de cada lectura. Las filas sin lectura se ignoran."
@@ -324,23 +364,61 @@ with tab1:
     res_seco = vc.resumir_tabla(df_seco)
     prom_seco_l, prom_seco_t = res_seco["prom_l"], res_seco["prom_t"]
 
-    lectura_fabrica_seco = st.number_input(
-        "Lectura de fábrica en seco (B) — del certificado (0 = no capturada)",
-        value=float(d["lectura_fabrica_seco"]), format="%.3f", step=0.1, key=f"fab_{v}",
-    )
+    st.markdown("**Comparación con la lectura cero de fábrica** (certificado, 'Shipped Zero Readings')")
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        lectura_fabrica_seco = st.number_input(
+            "Lectura cero de fábrica (B) — 0 = no capturada", value=float(d["lectura_fabrica_seco"]),
+            format="%.1f", step=0.1, key=f"fab_{v}",
+        )
+    with f2:
+        temp_fabrica = st.number_input(
+            "Temperatura de fábrica (°C)", value=float(d["temp_fabrica"]), format="%.1f", step=0.1, key=f"tfab_{v}"
+        )
+    with f3:
+        baro_fabrica_hpa = st.number_input(
+            "Barométrica de fábrica (hPa o mbar)", value=float(d["baro_fabrica_hpa"]), format="%.1f",
+            step=0.1, key=f"bfab_{v}",
+        )
+    with f4:
+        baro_seco_hpa = st.number_input(
+            "Barométrica durante estas lecturas (hPa)", value=float(d["baro_seco_hpa"]), format="%.1f",
+            step=0.1, key=f"bseco_{v}",
+            help="Presión ACTUAL (de la estación), no la relativa a nivel del mar.",
+        )
+    esperada_seco = math.nan
+    if (lectura_fabrica_seco > 0 and temp_fabrica > 0 and baro_fabrica_hpa > 0 and baro_seco_hpa > 0
+            and cal.tiene_constantes() and not math.isnan(prom_seco_t)):
+        esperada_seco = vc.lectura_esperada_en_aire(
+            cal, lectura_fabrica_seco, temp_fabrica, baro_fabrica_hpa / 10.0, prom_seco_t, baro_seco_hpa / 10.0
+        )
     est_seco = vc.evaluar_estabilidad(res_seco, crit_n_min, crit_tol_rango)
-    est_fab = vc.comparar_con_fabrica(prom_seco_l, lectura_fabrica_seco, crit_tol_fabrica)
+    est_fab = vc.comparar_con_esperada(prom_seco_l, esperada_seco, crit_tol_fabrica)
+    if not math.isnan(esperada_seco):
+        st.caption(
+            "La lectura esperada corrige por temperatura y por presión del aire (1 kPa ≈ 10 dígitos). "
+            "Compararla directamente con la lectura de fábrica daría una diferencia engañosa."
+        )
 
     if res_seco["n"]:
         st.success(f"Promedio En Seco — Lectura: **{fmt(prom_seco_l)} B** | Temp: **{fmt(prom_seco_t, 2)} °C**")
     mostrar_estado(*est_seco)
     if est_fab[0] != vc.OMITIDO:
         mostrar_estado(*est_fab)
+    elif not math.isnan(esperada_seco):
+        st.info(f"ℹ️ {est_fab[1]}")
 
 # --- TAB 2: SATURADO -------------------------------------------------------
 with tab2:
     st.header(f"b) Registro Saturado (Lectura Cero L0) — Pozo: {pozo_instalacion}")
-    st.markdown("Sumerge el sensor y espera la saturación. Registra cuándo lo sumergiste:")
+    st.info(
+        "**Procedimiento del fabricante (RST, manual VW2100, secc. 4.3 y 5.2):** 1) quita el filtro y sumerge "
+        "el sensor en agua reposada (unas 24 h); 2) arma el filtro bajo el agua; 3) la lectura cero (L0) se toma "
+        "**al aire libre**, con el filtro saturado y colocado, **sin sumergir** el sensor; 4) espera 20–30 min de "
+        "equilibrio térmico y anota la temperatura y la presión barométrica (S0) de ese momento. "
+        "Verifícalo en tu copia del manual."
+    )
+    st.markdown("Registra cuándo sumergiste el sensor para saturarlo:")
     c_f, c_h = st.columns(2)
     with c_f:
         inmersion_fecha = st.text_input(
@@ -578,6 +656,64 @@ with tab5:
             est_seg = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
         mostrar_estado(*est_seg)
 
+# --- TAB 6: BITÁCORA -------------------------------------------------------
+with tab6:
+    st.header(f"g) Bitácora del sensor — Pozo: {pozo_instalacion} | Sensor: {sensor_id}")
+    st.caption(
+        "Registra cada actividad (saturación, L0, instalación, cambios en el CR6, verificaciones). "
+        "La bitácora se guarda **dentro de la ficha .txt**: después de agregar entradas, "
+        "descarga el archivo desde la barra lateral. Si recargas la página sin descargar, se pierden."
+    )
+    clave_bit = f"bitacora_{v}"
+    if clave_bit not in st.session_state:
+        st.session_state[clave_bit] = limpiar_bitacora(d.get("bitacora"))
+    bitacora = st.session_state[clave_bit]
+
+    with st.form(f"form_bitacora_{v}", clear_on_submit=True):
+        bf1, bf2, bf3 = st.columns(3)
+        with bf1:
+            bit_fecha = st.text_input("Bitácora: fecha (AAAA-MM-DD, vacío = hoy)", value="")
+        with bf2:
+            bit_hora = st.text_input("Bitácora: hora (HH:MM, vacío = ahora)", value="")
+        with bf3:
+            bit_resp = st.text_input("Bitácora: responsable", value="")
+        bit_act = st.selectbox("Bitácora: actividad", ACTIVIDADES)
+        bit_detalle = st.text_area(
+            "Bitácora: detalle", value="", height=90,
+            placeholder="Ej: Constantes A, B, Tk capturadas del certificado; respaldo guardado como ...",
+        )
+        agregar = st.form_submit_button("➕ Agregar a la bitácora")
+    if agregar:
+        if not bit_resp.strip():
+            st.warning("Escribe quién realizó la actividad.")
+        else:
+            ahora = ahora_local()
+            bitacora.append({
+                "Fecha": bit_fecha.strip() or ahora.strftime("%Y-%m-%d"),
+                "Hora": bit_hora.strip() or ahora.strftime("%H:%M"),
+                "Responsable": bit_resp.strip(),
+                "Actividad": bit_act,
+                "Detalle": bit_detalle.strip(),
+            })
+            st.success("Entrada agregada. Descarga la ficha para guardarla.")
+
+    if bitacora:
+        con_ancho_total(st.dataframe, pd.DataFrame(bitacora, columns=COLS_BITACORA), hide_index=True)
+        if st.button("🗑️ Eliminar la última entrada", key=f"del_bit_{v}"):
+            bitacora.pop()
+            st.rerun()
+    else:
+        st.info("Aún no hay entradas en la bitácora.")
+
+_acts = {e["Actividad"] for e in bitacora}
+_faltan_bit = [a for a in ("Programa CR6 actualizado", "Verificación con geólogo") if a not in _acts]
+if not bitacora:
+    est_bit = (vc.OMITIDO, "Sin entradas en la bitácora.")
+elif _faltan_bit:
+    est_bit = (vc.OMITIDO, "Falta registrar: " + ", ".join(_faltan_bit) + ".")
+else:
+    est_bit = (vc.OK, f"{len(bitacora)} entrada(s), con actualización del CR6 y verificación con geólogo.")
+
 # ---------------------------------------------------------------------------
 # Verificación global
 # ---------------------------------------------------------------------------
@@ -596,12 +732,13 @@ else:
 checklist = [
     ("Datos del sensor y constantes", *est_datos),
     ("Lecturas en seco estables", *est_seco),
-    ("Seco vs. lectura de fábrica (opcional)", *est_fab),
+    ("Seco vs. lectura de fábrica, corregida (opcional)", *est_fab),
     (f"Saturación ≥ {crit_horas_sat:.0f} h", *est_sat_h),
     ("Lectura cero (L0) estable", *est_sat_l0),
     ("Prueba de inmersión", *est_inm),
     ("Instalación validada con sonda", *est_campo),
     ("Seguimiento post-instalación (opcional)", *est_seg),
+    ("Bitácora: CR6 y verificación con geólogo (opcional)", *est_bit),
 ]
 estados = [e for _, e, _ in checklist]
 n_err, n_pend = estados.count(vc.ERROR), estados.count(vc.PENDIENTE)
@@ -630,7 +767,8 @@ datos_guardar = {
     "a": coef_a, "b": coef_b, "cf": cf_factor, "tk": tk_factor,
     "s0_baro": s0_baro, "s_baro": s_baro,
     "notas": notas_campo,
-    "lectura_fabrica_seco": lectura_fabrica_seco,
+    "lectura_fabrica_seco": lectura_fabrica_seco, "temp_fabrica": temp_fabrica,
+    "baro_fabrica_hpa": baro_fabrica_hpa, "baro_seco_hpa": baro_seco_hpa,
     "inmersion_fecha": inmersion_fecha, "inmersion_hora": inmersion_hora,
     "altura_referencia": altura_referencia,
     "offset_diafragma_cm": offset_diafragma_cm,
@@ -643,6 +781,7 @@ datos_guardar = {
     "tabla_inm": df_inm.to_dict(orient="records"),
     "tabla_seg": df_seg.to_dict(orient="records"),
     "tabla_alt": df_alt.to_dict(orient="records"),
+    "bitacora": list(bitacora),
     # Resultados calculados (referencia; al cargar se recalculan)
     "prom_seco_l": prom_seco_l, "prom_seco_t": prom_seco_t,
     "prom_sat_l0": prom_sat_l0, "prom_sat_t0": prom_sat_t0,
@@ -666,8 +805,8 @@ con_ancho_total(
     mime="text/plain",
 )
 
-# --- TAB 6: RESUMEN --------------------------------------------------------
-with tab6:
+# --- TAB 7: RESUMEN --------------------------------------------------------
+with tab7:
     st.header(f"📋 Resumen Ejecutivo — Pozo: {pozo_instalacion} | Sensor: {sensor_id}")
 
     st.subheader("✔️ Lista de verificación")
@@ -709,7 +848,7 @@ with tab6:
     st.divider()
     resumen_df = pd.DataFrame(
         [(k, v_) for k, v_ in vc.limpiar_para_json(datos_guardar).items()
-         if not k.startswith("tabla_") and k != "checklist"],
+         if not k.startswith("tabla_") and k not in ("checklist", "bitacora")],
         columns=["Campo", "Valor"],
     )
     resumen_df["Valor"] = resumen_df["Valor"].astype(str)
@@ -725,6 +864,7 @@ with tab6:
                             referencia_efectiva)
                         if listo_calculo else df_inm),
             "Seguimiento": (tabla_seg.drop(columns=["_dt"]) if not tabla_seg.empty else df_seg),
+            "Bitacora": pd.DataFrame(bitacora, columns=COLS_BITACORA),
         }
         con_ancho_total(
             st.download_button,
