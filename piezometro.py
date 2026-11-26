@@ -37,7 +37,7 @@ st.set_page_config(
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
 st.markdown("Herramienta de campo con registro progresivo en archivo `.txt` por pozo.")
-VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · guardado en carpeta · rev. 3"
+VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · guardado en carpeta y gráficas de inmersión · rev. 4"
 st.caption(f"Versión de la app: {VERSION_APP}")
 banner = st.empty()  # se llena al final con el estado global
 
@@ -494,6 +494,15 @@ with tab3:
                        f"¿Dentro de ±{crit_tol_inm:.2f} m?"]],
             hide_index=True,
         )
+        grafica_lecturas = pd.DataFrame(
+            {
+                "Calculada (m)": [float(x) for x in tabla_inm[vc.COL_MCA]],
+                "Conocida (m)": [float(referencia_efectiva)] * len(tabla_inm),
+            },
+            index=pd.RangeIndex(1, len(tabla_inm) + 1, name="Lectura"),
+        )
+        st.caption("Columna calculada en cada lectura frente a la conocida (línea plana): deberían quedar juntas.")
+        st.line_chart(grafica_lecturas)
         presion_inm = float(tabla_inm[vc.COL_P].mean())
         altura_inm = float(tabla_inm[vc.COL_MCA].mean())
         det_inm = vc.analizar_columnas(
@@ -556,6 +565,21 @@ with tab3:
                     "Columna − altura (cm)": [round(x * 100, 2) for x in det_alt["por_altura"].values()],
                 })
                 con_ancho_total(st.dataframe, filas, hide_index=True)
+                prom_por_altura = {
+                    round(h * 100, 1): float(h + dif) for h, dif in det_alt["por_altura"].items()
+                }
+                grafica_alturas = pd.DataFrame(
+                    {
+                        "Calculada (m)": list(prom_por_altura.values()),
+                        "Ideal: igual a la altura medida (m)": [a / 100.0 for a in prom_por_altura],
+                    },
+                    index=pd.Index(list(prom_por_altura), name="Altura medida (cm)"),
+                ).sort_index()
+                st.caption(
+                    "Columna calculada frente a la altura medida. Una línea paralela a la ideal indica un "
+                    "desfase fijo; una línea que se abre o se cierra indica error de constantes."
+                )
+                st.line_chart(grafica_alturas)
             mostrar_estado(det_alt["estado"], det_alt["mensaje"])
             if det_alt["estado"] == vc.OK:
                 st.info(
