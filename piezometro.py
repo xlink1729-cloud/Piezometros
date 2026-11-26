@@ -37,7 +37,7 @@ st.set_page_config(
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
 st.markdown("Herramienta de campo con registro progresivo en archivo `.txt` por pozo.")
-VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · guardado en carpeta y gráficas de inmersión · rev. 4"
+VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · presión por pestaña · rev. 5"
 st.caption(f"Versión de la app: {VERSION_APP}")
 banner = st.empty()  # se llena al final con el estado global
 
@@ -64,6 +64,24 @@ def fmt(x, dec=3, sufijo=""):
 def mostrar_estado(estado, texto):
     funcion = {vc.OK: st.success, vc.ERROR: st.error, vc.AVISO: st.warning}.get(estado, st.info)
     funcion(f"{ICONOS[estado]} {texto}")
+
+
+def pedir_presion(etiqueta, clave, key, ayuda):
+    """Campo de presión barométrica en hPa (= mBar, como lo da el CR6). Devuelve (kPa, capturada)."""
+    hpa = st.number_input(
+        etiqueta, min_value=0.0, value=round(float(d[clave]) * 10.0, 1), step=0.1, format="%.1f",
+        key=key, help=ayuda,
+    )
+    if hpa <= 0:
+        st.warning("⚠️ Falta capturar la presión barométrica de ese momento (0 = no capturada).")
+        return math.nan, False
+    if hpa >= 1000:
+        st.warning(
+            "⚠️ Ese valor parece presión reducida a nivel del mar. Usa la presión de estación del CR6 "
+            "(a unos 630 m ronda 940 hPa)."
+        )
+    st.caption(f"= {hpa / 10.0:.3f} kPa")
+    return hpa / 10.0, True
 
 
 def peor(*pares):
@@ -132,7 +150,7 @@ def ficha_vacia():
         "prof_pozo": 0.0, "prof_inst": 0.0, "naf": 0.0,
         # Constantes en 0 a propósito: se capturan del certificado del sensor.
         "a": 0.0, "b": 0.0, "cf": 0.0, "tk": 0.0,
-        "s0_baro": 101.325, "s_baro": 101.325,
+        "s0_baro": 0.0, "s_baro": 0.0, "s_inm_baro": 0.0, "s_campo_baro": 0.0,
         "notas": "",
         "lectura_fabrica_seco": 0.0, "temp_fabrica": 0.0,
         "baro_fabrica_hpa": 0.0, "baro_seco_hpa": 0.0,
@@ -150,7 +168,7 @@ def ficha_vacia():
 
 CLAVES_NUM = [
     "x", "y", "z", "prof_pozo", "prof_inst", "naf", "a", "b", "cf", "tk",
-    "s0_baro", "s_baro", "lectura_fabrica_seco", "temp_fabrica", "baro_fabrica_hpa", "baro_seco_hpa",
+    "s0_baro", "s_baro", "s_inm_baro", "s_campo_baro", "lectura_fabrica_seco", "temp_fabrica", "baro_fabrica_hpa", "baro_seco_hpa",
     "altura_referencia", "offset_diafragma_cm",
     "l_campo", "t_campo", "crit_n_min", "crit_tol_rango", "crit_tol_fabrica",
     "crit_horas_sat", "crit_tol_inm", "crit_tol_campo", "crit_umbral_salto",
@@ -164,6 +182,10 @@ def normalizar_ficha(datos):
         return base
     ficha = dict(base)
     ficha.update({k: v for k, v in datos.items() if v is not None})
+    # Fichas anteriores tenían una sola "S actual": se usa para la inmersión y el campo.
+    for nueva in ("s_inm_baro", "s_campo_baro"):
+        if datos.get(nueva) is None and datos.get("s_baro") is not None:
+            ficha[nueva] = datos["s_baro"]
     for k in CLAVES_NUM:
         x = vc._num(ficha.get(k))
         ficha[k] = base[k] if math.isnan(x) else x
@@ -290,16 +312,10 @@ cf_factor = st.sidebar.number_input("Factor Lineal (CF)", value=float(d["cf"]), 
 tk_factor = st.sidebar.number_input("Coef. Térmico (Tk)", value=float(d["tk"]), format="%.4e", key=f"tk_{v}")
 
 st.sidebar.subheader("Presión Barométrica")
-s0_baro = st.sidebar.number_input(
-    "S0 Inicial (kPa)", value=float(d["s0_baro"]), format="%.3f", key=f"s0_{v}",
-    help="Presión barométrica medida al tomar la lectura cero (L0), no el valor a nivel del mar.",
+st.sidebar.caption(
+    "Se captura en cada pestaña, con la presión del CR6 de la caseta 1 (Barometer_mB) a la hora de esas "
+    "lecturas: S0 en la pestaña 2 (L0), la de la prueba en la 3 y la de la lectura de campo en la 4."
 )
-s_baro = st.sidebar.number_input("S Actual (kPa)", value=float(d["s_baro"]), format="%.3f", key=f"s_{v}")
-if abs(s0_baro - s_baro) > 3.0:
-    st.sidebar.warning(
-        "S0 y S difieren más de 3 kPa (≈0.3 m). Si no es un cambio real de clima, "
-        "revisa que ambas sean presión del sitio y no el valor estándar 101.325."
-    )
 
 with st.sidebar.expander("⚙️ Criterios de aceptación"):
     st.caption("Valores sugeridos: ajústalos a tu procedimiento o a la especificación del proyecto.")
@@ -337,7 +353,7 @@ notas_campo = st.sidebar.text_area(
     height=100, key=f"notas_{v}",
 )
 
-cal = vc.Calibracion(tipo_modelo, a=coef_a, b=coef_b, cf=cf_factor, tk=tk_factor, s0_baro=s0_baro)
+cal = vc.Calibracion(tipo_modelo, a=coef_a, b=coef_b, cf=cf_factor, tk=tk_factor, s0_baro=float(d["s0_baro"]))
 cal_alterno = cal.alterno()
 if not cal.tiene_constantes():
     st.warning(
@@ -436,6 +452,15 @@ with tab2:
     prom_sat_l0, prom_sat_t0 = res_sat["prom_l"], res_sat["prom_t"]
     l0_ok = not (math.isnan(prom_sat_l0) or math.isnan(prom_sat_t0))
 
+    st.markdown("**Presión barométrica durante estas lecturas de L0 (S0)**")
+    s0_baro, s0_ok = pedir_presion(
+        "Presión durante L0 (hPa o mBar)", "s0_baro", f"p0_{v}",
+        "Valor de Barometer_mB del CR6 de la caseta 1 a la hora de estas lecturas (si no hay registro "
+        "exacto, interpola entre los dos más cercanos). No uses la presión a nivel del mar.",
+    )
+    cal = cal.con_s0(s0_baro if s0_ok else float(d["s0_baro"]))
+    cal_alterno = cal.alterno()
+
     c_constante = math.nan
     if l0_ok and tipo_modelo == "Polinomial":
         c_constante = vc.constante_c(coef_a, coef_b, prom_sat_l0)
@@ -449,6 +474,10 @@ with tab2:
         vc.horas_saturacion(vc.construir_dt(inmersion_fecha, inmersion_hora), df_sat), crit_horas_sat
     )
     est_sat_l0 = vc.evaluar_estabilidad(res_sat, crit_n_min, crit_tol_rango)
+    est_sat_s0 = (
+        (vc.PENDIENTE, "Falta la presión barométrica de L0 (S0).") if (res_sat["n"] and not s0_ok)
+        else (vc.OK, "S0 capturada.") if s0_ok else (vc.OMITIDO, "Aún no hay lecturas de L0.")
+    )
     mostrar_estado(*est_sat_h)
     mostrar_estado(*est_sat_l0)
 
@@ -471,6 +500,15 @@ with tab3:
         ),
     )
     referencia_efectiva = altura_referencia + offset_diafragma_cm / 100.0
+    s_inm_baro, s_inm_ok = pedir_presion(
+        "Presión durante esta prueba (hPa o mBar)", "s_inm_baro", f"pi_{v}",
+        "Barometer_mB del CR6 de la caseta 1 a la hora de estas lecturas de inmersión.",
+    )
+    if s0_ok and s_inm_ok and abs(s0_baro - s_inm_baro) > 3.0:
+        st.warning(
+            "La presión de esta prueba y la de L0 difieren más de 30 hPa (≈0.3 m). Si no es un cambio real "
+            "de clima, revisa que ambas sean presión de estación."
+        )
     st.caption(NOTA_TABLA)
     df_inm = editor("inm", vc.COLS_BASE)
     res_inm = vc.resumir_tabla(df_inm)
@@ -478,9 +516,9 @@ with tab3:
 
     presion_inm = altura_inm = math.nan
     est_inm_val = (vc.PENDIENTE, "Captura las lecturas de la prueba de inmersión.")
-    listo_calculo = l0_ok and cal.tiene_constantes()
+    listo_calculo = l0_ok and cal.tiene_constantes() and s0_ok and s_inm_ok
     if res_inm["n"] and listo_calculo:
-        tabla_inm = vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro)
+        tabla_inm = vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_inm_baro)
         tabla_inm = tabla_inm[pd.to_numeric(tabla_inm[vc.COL_L], errors="coerce").notna()].copy()
         tabla_inm[f"¿Dentro de ±{crit_tol_inm:.2f} m?"] = [
             "✅" if abs(c - referencia_efectiva) <= crit_tol_inm else "❌"
@@ -512,7 +550,7 @@ with tab3:
             list(tabla_inm[vc.COL_MCA]), referencia_efectiva, crit_tol_inm, list(tabla_inm[vc.COL_NUM])
         )
     elif res_inm["n"]:
-        est_inm_val = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
+        est_inm_val = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0), las constantes del modelo o la presión barométrica (S0 en la pestaña 2 y la de esta prueba).")
 
     st.divider()
     if offset_diafragma_cm:
@@ -535,7 +573,7 @@ with tab3:
     est_inm = peor(est_inm_val, est_inm_estab)
 
     if cal_alterno is not None and res_inm["n"] and listo_calculo:
-        t_alt = vc.calcular_tabla_presion(df_inm, cal_alterno, prom_sat_l0, prom_sat_t0, s_baro)
+        t_alt = vc.calcular_tabla_presion(df_inm, cal_alterno, prom_sat_l0, prom_sat_t0, s_inm_baro)
         mca_alt = float(t_alt[vc.COL_MCA].mean())
         st.caption(
             f"Contraste con el modelo {cal_alterno.modelo}: {fmt(mca_alt)} mca "
@@ -555,7 +593,7 @@ with tab3:
     det_alt = None
     if vc.serie_numerica(df_alt, vc.COL_L).notna().any():
         if listo_calculo:
-            tabla_alt = vc.calcular_tabla_presion(df_alt, cal, prom_sat_l0, prom_sat_t0, s_baro)
+            tabla_alt = vc.calcular_tabla_presion(df_alt, cal, prom_sat_l0, prom_sat_t0, s_inm_baro)
             det_alt = vc.analizar_calibracion_alturas(
                 [h / 100.0 for h in vc.serie_numerica(tabla_alt, vc.COL_ALT)], list(tabla_alt[vc.COL_MCA]),
             )
@@ -587,7 +625,7 @@ with tab3:
                     "de medición (cm)' y, desde entonces, la prueba usará esa corrección."
                 )
         else:
-            st.info("⏳ Falta la lectura cero (L0 y T0) o las constantes del modelo.")
+            st.info("⏳ Falta la lectura cero (L0 y T0), las constantes o la presión barométrica (S0 y la de esta prueba).")
 
 # --- TAB 4: INSTALACIÓN EN CAMPO ------------------------------------------
 with tab4:
@@ -616,12 +654,22 @@ with tab4:
             "Temperatura en campo (°C)", value=float(d["t_campo"]), step=0.1, format="%.2f", key=f"tc_{v}"
         )
 
+    s_campo_baro, s_campo_ok = pedir_presion(
+        "Presión durante esta lectura de campo (hPa o mBar)", "s_campo_baro", f"pc_{v}",
+        "Barometer_mB del CR6 de la caseta 1 a la hora de la lectura de campo.",
+    )
+    if s0_ok and s_campo_ok and abs(s0_baro - s_campo_baro) > 3.0:
+        st.warning(
+            "La presión de esta lectura y la de L0 difieren más de 30 hPa (≈0.3 m). Si no es un cambio real "
+            "de clima, revisa que ambas sean presión de estación."
+        )
+
     mca_teorico = vc.columna_teorica(prof_inst_val, naf_val)
     elev_teorica = cota_instalacion + mca_teorico
     campo_capturado = l_campo > 0
     p_campo = mca_campo = elev_campo = prof_agua_campo = math.nan
-    if campo_capturado and l0_ok and cal.tiene_constantes():
-        p_campo = vc.presion_kpa(cal, l_campo, t_campo, prom_sat_l0, prom_sat_t0, s_baro)
+    if campo_capturado and l0_ok and cal.tiene_constantes() and s0_ok and s_campo_ok:
+        p_campo = vc.presion_kpa(cal, l_campo, t_campo, prom_sat_l0, prom_sat_t0, s_campo_baro)
         mca_campo = vc.kpa_a_mca(p_campo)
         elev_campo = cota_instalacion + mca_campo
         prof_agua_campo = prof_inst_val - mca_campo
@@ -636,7 +684,7 @@ with tab4:
     if not math.isnan(prof_agua_campo):
         st.caption(f"Profundidad al agua calculada desde superficie: **{prof_agua_campo:.2f} m**.")
     if cal_alterno is not None and not math.isnan(p_campo):
-        p_alt = vc.presion_kpa(cal_alterno, l_campo, t_campo, prom_sat_l0, prom_sat_t0, s_baro)
+        p_alt = vc.presion_kpa(cal_alterno, l_campo, t_campo, prom_sat_l0, prom_sat_t0, s_campo_baro)
         st.caption(
             f"Contraste con el modelo {cal_alterno.modelo}: "
             f"{cota_instalacion + vc.kpa_a_mca(p_alt):.3f} m.s.n.m. (Presión: {p_alt:.2f} kPa)."
@@ -645,8 +693,8 @@ with tab4:
     st.markdown("### 📋 Diagnóstico de Verificación in Situ")
     if not campo_capturado:
         est_campo = (vc.PENDIENTE, "Captura la lectura de campo del sensor.")
-    elif not (l0_ok and cal.tiene_constantes()):
-        est_campo = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
+    elif not (l0_ok and cal.tiene_constantes() and s0_ok and s_campo_ok):
+        est_campo = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0), las constantes o la presión barométrica (S0 y la de esta lectura).")
     else:
         est_campo = vc.validar_campo(mca_campo, mca_teorico, crit_tol_campo)
     mostrar_estado(*est_campo)
@@ -655,16 +703,17 @@ with tab4:
 with tab5:
     st.header(f"e) Seguimiento posterior a la instalación — Pozo: {pozo_instalacion}")
     st.caption(
-        "Agrega una fila por visita o descarga de datos. Con 'Baro (kPa)' vacío se usa la S actual de la ficha. "
+        "Agrega una fila por visita o descarga de datos. Con 'Baro (kPa)' vacío se usa la presión de la pestaña 4. "
         "Usa el botón + de la tabla para añadir filas."
     )
     df_seg = editor("seg", vc.COLS_SEGUIMIENTO, dinamico=True)
     tabla_seg = pd.DataFrame()
     est_seg = (vc.OMITIDO, "Aún no hay lecturas de seguimiento.")
     if vc.serie_numerica(df_seg, vc.COL_L).notna().any():
-        if l0_ok and cal.tiene_constantes():
+        if l0_ok and cal.tiene_constantes() and s0_ok:
             tabla_seg = vc.calcular_seguimiento(
-                df_seg, cal, prom_sat_l0, prom_sat_t0, cota_instalacion, prof_inst_val, s_baro, crit_umbral_salto
+                df_seg, cal, prom_sat_l0, prom_sat_t0, cota_instalacion, prof_inst_val,
+                s_campo_baro if s_campo_ok else math.nan, crit_umbral_salto
             )
             mostrar_cols = [c for c in tabla_seg.columns if c != "_dt"]
             st.markdown("**Nivel de agua calculado**")
@@ -676,12 +725,18 @@ with tab5:
             elif tabla_seg[vc.COL_NIVEL].notna().sum() >= 1:
                 st.caption("Para ver la gráfica se necesitan al menos 2 lecturas con fecha y hora válidas.")
             n_validas = int(tabla_seg[vc.COL_NIVEL].notna().sum())
+            n_sin_nivel = len(tabla_seg) - n_validas
+            if n_sin_nivel:
+                st.caption(
+                    f"{n_sin_nivel} fila(s) sin nivel: revisa que tengan lectura, temperatura y presión "
+                    "(columna Baro o la de la pestaña 4)."
+                )
             est_seg = (
                 (vc.AVISO, f"{n_alertas} salto(s) mayores a {crit_umbral_salto:.2f} m entre lecturas.")
                 if n_alertas else (vc.OK, f"{n_validas} lectura(s) de seguimiento sin saltos bruscos.")
             )
         else:
-            est_seg = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0) o las constantes del modelo.")
+            est_seg = (vc.PENDIENTE, "Falta la lectura cero (L0 y T0), las constantes o la presión S0 de L0.")
         mostrar_estado(*est_seg)
 
 # --- TAB 6: BITÁCORA -------------------------------------------------------
@@ -762,7 +817,7 @@ checklist = [
     ("Lecturas en seco estables", *est_seco),
     ("Seco vs. lectura de fábrica, corregida (opcional)", *est_fab),
     (f"Saturación ≥ {crit_horas_sat:.0f} h", *est_sat_h),
-    ("Lectura cero (L0) estable", *est_sat_l0),
+    ("Lectura cero (L0) estable", *peor(est_sat_l0, est_sat_s0)),
     ("Prueba de inmersión", *est_inm),
     ("Instalación validada con sonda", *est_campo),
     ("Seguimiento post-instalación (opcional)", *est_seg),
@@ -793,7 +848,8 @@ datos_guardar = {
     "x": coord_x, "y": coord_y, "z": cota_instalacion,
     "prof_pozo": prof_pozo_val, "prof_inst": prof_inst_val, "naf": naf_val,
     "a": coef_a, "b": coef_b, "cf": cf_factor, "tk": tk_factor,
-    "s0_baro": s0_baro, "s_baro": s_baro,
+    "s0_baro": s0_baro if s0_ok else 0.0, "s_baro": s_inm_baro if s_inm_ok else 0.0,
+    "s_inm_baro": s_inm_baro if s_inm_ok else 0.0, "s_campo_baro": s_campo_baro if s_campo_ok else 0.0,
     "notas": notas_campo,
     "lectura_fabrica_seco": lectura_fabrica_seco, "temp_fabrica": temp_fabrica,
     "baro_fabrica_hpa": baro_fabrica_hpa, "baro_seco_hpa": baro_seco_hpa,
@@ -908,7 +964,7 @@ with tab7:
             "Seco": df_seco,
             "Saturado": df_sat,
             "Inmerso": (con_conocida_y_variacion(
-                            vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_baro),
+                            vc.calcular_tabla_presion(df_inm, cal, prom_sat_l0, prom_sat_t0, s_inm_baro),
                             referencia_efectiva)
                         if listo_calculo else df_inm),
             "Seguimiento": (tabla_seg.drop(columns=["_dt"]) if not tabla_seg.empty else df_seg),
