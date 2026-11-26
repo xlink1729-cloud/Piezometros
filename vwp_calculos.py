@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Optional
@@ -549,6 +550,28 @@ def calcular_seguimiento(df, cal: Calibracion, l0, t0, cota, prof_inst, s_ficha,
 # --------------------------------------------------------------------------
 # Exportación
 # --------------------------------------------------------------------------
+
+
+def guardar_texto_en_carpeta(carpeta, nombre_base, texto, con_fecha=True, ahora=None):
+    """Guarda `texto` como .txt dentro de `carpeta` (se crea si no existe).
+
+    Con `con_fecha` el nombre lleva fecha y hora (no sobrescribe avances
+    anteriores); sin ella, reemplaza el archivo del mismo nombre.
+    Devuelve la ruta completa. Lanza OSError si no se puede escribir.
+    """
+    carpeta = os.path.expanduser((carpeta or "").strip())
+    if not carpeta:
+        raise ValueError("Indica una carpeta.")
+    os.makedirs(carpeta, exist_ok=True)
+    nombre = nombre_base
+    if con_fecha:
+        nombre = f"{nombre_base}_{(ahora or datetime.now()).strftime('%Y-%m-%d_%H%M')}"
+    ruta = os.path.join(carpeta, f"{nombre}.txt")
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(texto)
+    return os.path.abspath(ruta)
+
+
 def limpiar_para_json(obj):
     """NaN -> None y tipos numpy -> tipos nativos, para guardar JSON válido."""
     if isinstance(obj, dict):
