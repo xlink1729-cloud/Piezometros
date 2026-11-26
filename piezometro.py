@@ -8,6 +8,7 @@ Los cálculos viven en vwp_calculos.py (deben estar en la misma carpeta).
 
 import json
 import math
+import os
 import re
 from datetime import datetime
 
@@ -36,7 +37,7 @@ st.set_page_config(
 
 st.title("🚰 Sistema y Protocolo de Verificación de Piezómetros VWP")
 st.markdown("Herramienta de campo con registro progresivo en archivo `.txt` por pozo.")
-VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · rev. 2"
+VERSION_APP = "2026-11-25 · con bitácora (7 pestañas) · guardado en carpeta · rev. 3"
 st.caption(f"Versión de la app: {VERSION_APP}")
 banner = st.empty()  # se llena al final con el estado global
 
@@ -807,6 +808,26 @@ con_ancho_total(
     file_name=f"{nombre_base}.txt",
     mime="text/plain",
 )
+
+st.sidebar.caption("O guárdala directo en una carpeta que elijas (sirve sin internet):")
+try:
+    carpeta_defecto = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fichas")
+except NameError:
+    carpeta_defecto = os.path.join(os.getcwd(), "fichas")
+carpeta_guardado = st.sidebar.text_input(
+    "Carpeta de guardado (ruta completa)", value=carpeta_defecto, key="carpeta_guardado"
+)
+fecha_en_nombre = st.sidebar.checkbox(
+    "Agregar fecha y hora al nombre (no sobrescribe)", value=True, key="fecha_en_nombre"
+)
+if st.sidebar.button("📁 Guardar en esa carpeta", key="btn_guardar_carpeta"):
+    try:
+        ruta_guardada = vc.guardar_texto_en_carpeta(
+            carpeta_guardado, nombre_base, exportar_pozo_txt(datos_guardar), con_fecha=fecha_en_nombre
+        )
+        st.sidebar.success(f"Guardado en: {ruta_guardada}")
+    except (OSError, ValueError) as exc:
+        st.sidebar.error(f"No se pudo guardar: {exc}")
 
 # --- TAB 7: RESUMEN --------------------------------------------------------
 with tab7:
