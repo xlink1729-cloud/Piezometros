@@ -454,7 +454,7 @@ with tab2:
 
     st.markdown("**Presión barométrica durante estas lecturas de L0 (S0)**")
     s0_baro, s0_ok = pedir_presion(
-        "Presión durante L0 (hPa o mBar)", "s0_baro", f"p0_{v}",
+        "Presión durante L0 (hPa o mBar)", "s0_baro", f"baro_l0_{v}",
         "Valor de Barometer_mB del CR6 de la caseta 1 a la hora de estas lecturas (si no hay registro "
         "exacto, interpola entre los dos más cercanos). No uses la presión a nivel del mar.",
     )
@@ -501,7 +501,7 @@ with tab3:
     )
     referencia_efectiva = altura_referencia + offset_diafragma_cm / 100.0
     s_inm_baro, s_inm_ok = pedir_presion(
-        "Presión durante esta prueba (hPa o mBar)", "s_inm_baro", f"pi_{v}",
+        "Presión durante esta prueba (hPa o mBar)", "s_inm_baro", f"baro_inm_{v}",
         "Barometer_mB del CR6 de la caseta 1 a la hora de estas lecturas de inmersión.",
     )
     if s0_ok and s_inm_ok and abs(s0_baro - s_inm_baro) > 3.0:
@@ -655,7 +655,7 @@ with tab4:
         )
 
     s_campo_baro, s_campo_ok = pedir_presion(
-        "Presión durante esta lectura de campo (hPa o mBar)", "s_campo_baro", f"pc_{v}",
+        "Presión durante esta lectura de campo (hPa o mBar)", "s_campo_baro", f"baro_campo_{v}",
         "Barometer_mB del CR6 de la caseta 1 a la hora de la lectura de campo.",
     )
     if s0_ok and s_campo_ok and abs(s0_baro - s_campo_baro) > 3.0:
