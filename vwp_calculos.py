@@ -78,6 +78,10 @@ class Calibracion:
     def con_modelo(self, modelo: str) -> "Calibracion":
         return replace(self, modelo=modelo)
 
+    def con_s0(self, s0_baro: float) -> "Calibracion":
+        """Misma calibración con otra S0 (presión barométrica al tomar L0, en kPa)."""
+        return replace(self, s0_baro=s0_baro)
+
     def alterno(self) -> Optional["Calibracion"]:
         """Cálculo con el otro modelo, si sus constantes están capturadas."""
         if self.modelo == "Polinomial":
